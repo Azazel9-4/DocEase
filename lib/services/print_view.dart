@@ -1,0 +1,196 @@
+import 'package:flutter/material.dart';
+import 'pagination_manager.dart';
+
+enum PaperSize { a4, short, long }
+
+class PrintView extends StatefulWidget {
+  final PaginationManager paginationManager;
+  final PaperSize paperSize;
+
+  final bool isBold;
+  final bool isItalic;
+  final bool isUnderline;
+  final TextAlign alignment;
+  final double fontSize;
+  final String fontFamily;
+
+  const PrintView({
+    super.key,
+    required this.paginationManager,
+    this.paperSize = PaperSize.a4,
+    required this.isBold,
+    required this.isItalic,
+    required this.isUnderline,
+    required this.alignment,
+    required this.fontSize,
+    required this.fontFamily,
+  });
+
+  @override
+  State<PrintView> createState() => _PrintViewState();
+}
+
+class _PrintViewState extends State<PrintView> {
+  final ScrollController _scrollController = ScrollController();
+  late TextEditingController _controller;
+  late FocusNode _focusNode;
+
+  late Size _pageSize;
+  final double _pageGap = 24;
+
+  @override
+  void initState() {
+    super.initState();
+
+    _pageSize = _getPaperSize(widget.paperSize);
+
+    _controller = TextEditingController(text: widget.paginationManager.fullText);
+    _focusNode = FocusNode();
+
+    WidgetsBinding.instance.addPostFrameCallback((_) => _restoreCursor());
+
+    widget.paginationManager.addListener(_syncFromManager);
+  }
+
+  Size _getPaperSize(PaperSize size) {
+    switch (size) {
+      case PaperSize.a4:
+        return const Size(794, 1123);
+      case PaperSize.short:
+        return const Size(816, 1056);
+      case PaperSize.long:
+        return const Size(816, 1248);
+    }
+  }
+
+  void _restoreCursor() {
+    final pos = widget.paginationManager.globalCursorPosition;
+    _focusNode.requestFocus();
+    _controller.selection =
+        TextSelection.collapsed(offset: pos.clamp(0, _controller.text.length));
+  }
+
+  void _syncFromManager() {
+    if (_controller.text != widget.paginationManager.fullText) {
+      final previous = widget.paginationManager.globalCursorPosition;
+      _controller.text = widget.paginationManager.fullText;
+      _controller.selection =
+          TextSelection.collapsed(offset: previous.clamp(0, _controller.text.length));
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _focusNode.dispose();
+    _scrollController.dispose();
+    widget.paginationManager.removeListener(_syncFromManager);
+    super.dispose();
+  }
+
+  double _calculateTextHeight(String text, TextStyle style, double maxWidth) {
+    final tp = TextPainter(
+      text: TextSpan(text: text, style: style),
+      textDirection: TextDirection.ltr,
+      maxLines: null,
+    );
+    tp.layout(maxWidth: maxWidth);
+    return tp.height;
+  }
+
+  void _onTextChanged(String value) {
+    widget.paginationManager.updateContent(value);
+    final cursorOffset = _controller.selection.baseOffset;
+    widget.paginationManager.setGlobalCursorPosition(cursorOffset);
+
+    // Force re-render to add more pages if needed
+    setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final style = TextStyle(
+      fontSize: widget.fontSize,
+      fontFamily: widget.fontFamily,
+      fontWeight: widget.isBold ? FontWeight.bold : FontWeight.normal,
+      fontStyle: widget.isItalic ? FontStyle.italic : FontStyle.normal,
+      decoration: widget.isUnderline ? TextDecoration.underline : TextDecoration.none,
+      height: 1.8,
+      color: Colors.black,
+    );
+
+    final maxTextWidth = _pageSize.width - 72; // 36 padding each side
+    final textHeight = _calculateTextHeight(_controller.text, style, maxTextWidth);
+    final singlePageHeight = _pageSize.height;
+
+    // Number of pages needed for the text
+    final numPages = (textHeight / singlePageHeight).ceil().clamp(1, 1000);
+
+    return Container(
+      color: const Color(0xFFD6D6D6),
+      child: SingleChildScrollView(
+        controller: _scrollController,
+        padding: const EdgeInsets.symmetric(vertical: 24),
+        child: Stack(
+          children: [
+            // Draw the white pages
+            Column(
+              children: List.generate(numPages, (index) {
+                return Container(
+                  width: _pageSize.width,
+                  height: _pageSize.height,
+                  margin: EdgeInsets.only(bottom: _pageGap),
+                  color: Colors.white,
+                );
+              }),
+            ),
+            // Continuous TextField overlay
+            Padding(
+              padding: const EdgeInsets.only(left: 36, right: 36, top: 28),
+              child: LayoutBuilder(builder: (context, constraints) {
+                return TextField(
+                  controller: _controller,
+                  focusNode: _focusNode,
+                  maxLines: null,
+                  scrollPhysics: const BouncingScrollPhysics(),
+                  style: style,
+                  textAlign: widget.alignment,
+                  decoration: const InputDecoration(border: InputBorder.none),
+                  onChanged: _onTextChanged,
+                  keyboardType: TextInputType.multiline,
+                  textInputAction: TextInputAction.newline,
+                  // Prevent cursor from going into gray space
+buildCounter: (_, {required currentLength, maxLength, required isFocused}) {
+  // 1. Get the offset and handle the -1 case
+  final int offset = _controller.selection.baseOffset;
+  
+  // If offset is -1, the selection is invalid, so we return null early
+  if (offset < 0) return null;
+
+  // 2. Calculate height only with a valid offset
+  final double currentCursorHeight = _calculateTextHeight(
+    _controller.text.substring(0, offset), 
+    style, 
+    maxTextWidth
+  );
+
+  final pageIndex = (currentCursorHeight / singlePageHeight).floor();
+
+  if (pageIndex >= numPages) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _controller.selection = TextSelection.collapsed(
+          offset: _controller.text.length);
+    });
+  }
+  return null;
+
+                  },
+                );
+              }),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
