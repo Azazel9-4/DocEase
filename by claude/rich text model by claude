@@ -1,0 +1,169 @@
+import 'dart:convert';
+
+class RichSpan {
+  final String text;
+  final bool isBold;
+  final bool isItalic;
+  final bool isUnderline;
+  final double fontSize;
+  final String fontFamily;
+
+  const RichSpan({
+    required this.text,
+    this.isBold = false,
+    this.isItalic = false,
+    this.isUnderline = false,
+    this.fontSize = 14.0,
+    this.fontFamily = 'Arial',
+  });
+
+  RichSpan copyWith({
+    String? text,
+    bool? isBold,
+    bool? isItalic,
+    bool? isUnderline,
+    double? fontSize,
+    String? fontFamily,
+  }) =>
+      RichSpan(
+        text: text ?? this.text,
+        isBold: isBold ?? this.isBold,
+        isItalic: isItalic ?? this.isItalic,
+        isUnderline: isUnderline ?? this.isUnderline,
+        fontSize: fontSize ?? this.fontSize,
+        fontFamily: fontFamily ?? this.fontFamily,
+      );
+
+  Map<String, dynamic> toMap() => {
+        'text': text,
+        'bold': isBold,
+        'italic': isItalic,
+        'underline': isUnderline,
+        'fontSize': fontSize,
+        'fontFamily': fontFamily,
+      };
+
+  factory RichSpan.fromMap(Map<String, dynamic> map) =>
+      RichSpan(
+        text: map['text'] as String,
+        isBold: map['bold'] as bool? ?? false,
+        isItalic: map['italic'] as bool? ?? false,
+        isUnderline: map['underline'] as bool? ?? false,
+        fontSize: (map['fontSize'] as num?)?.toDouble() ?? 14.0,
+        fontFamily: map['fontFamily'] as String? ?? 'Arial',
+      );
+
+  // ── Serialization ────────────────────────────────────
+  static String spansToJson(List<RichSpan> spans) =>
+      jsonEncode(spans.map((s) => s.toMap()).toList());
+
+  static List<RichSpan> spansFromJson(String json) {
+    try {
+      final list = jsonDecode(json) as List;
+      return list
+          .map((e) => RichSpan.fromMap(e as Map<String, dynamic>))
+          .toList();
+    } catch (_) {
+      return [RichSpan(text: json)];
+    }
+  }
+
+  // ── Plain text helpers ───────────────────────────────
+  static String spansToPlainText(List<RichSpan> spans) =>
+      spans.map((s) => s.text).join();
+
+  static List<RichSpan> fromPlainText(
+    String text, {
+    double fontSize = 14.0,
+    String fontFamily = 'Arial',
+  }) =>
+      text.isEmpty
+          ? []
+          : [
+              RichSpan(
+                  text: text,
+                  fontSize: fontSize,
+                  fontFamily: fontFamily)
+            ];
+
+  // ── Apply formatting to a character range ────────────
+  static List<RichSpan> applyFormat(
+    List<RichSpan> spans,
+    int start,
+    int end, {
+    bool? bold,
+    bool? italic,
+    bool? underline,
+    double? fontSize,
+    String? fontFamily,
+  }) {
+    if (start >= end) return spans;
+
+    final result = <RichSpan>[];
+    int pos = 0;
+
+    for (final span in spans) {
+      final spanStart = pos;
+      final spanEnd = pos + span.text.length;
+
+      // No overlap — keep as is
+      if (spanEnd <= start || spanStart >= end) {
+        result.add(span);
+        pos = spanEnd;
+        continue;
+      }
+
+      // Before selection
+      if (spanStart < start) {
+        result.add(span.copyWith(
+            text: span.text.substring(0, start - spanStart)));
+      }
+
+      // Within selection
+      final overlapStart =
+          (start > spanStart ? start : spanStart) - spanStart;
+      final overlapEnd =
+          (end < spanEnd ? end : spanEnd) - spanStart;
+      result.add(span.copyWith(
+        text: span.text.substring(overlapStart, overlapEnd),
+        isBold: bold ?? span.isBold,
+        isItalic: italic ?? span.isItalic,
+        isUnderline: underline ?? span.isUnderline,
+        fontSize: fontSize ?? span.fontSize,
+        fontFamily: fontFamily ?? span.fontFamily,
+      ));
+
+      // After selection
+      if (spanEnd > end) {
+        result.add(
+            span.copyWith(text: span.text.substring(end - spanStart)));
+      }
+
+      pos = spanEnd;
+    }
+
+    return _mergeAdjacentSpans(result);
+  }
+
+  // Merge spans with identical styles to keep list clean
+  static List<RichSpan> _mergeAdjacentSpans(
+      List<RichSpan> spans) {
+    if (spans.isEmpty) return spans;
+    final merged = <RichSpan>[spans.first];
+    for (int i = 1; i < spans.length; i++) {
+      final prev = merged.last;
+      final curr = spans[i];
+      if (prev.isBold == curr.isBold &&
+          prev.isItalic == curr.isItalic &&
+          prev.isUnderline == curr.isUnderline &&
+          prev.fontSize == curr.fontSize &&
+          prev.fontFamily == curr.fontFamily) {
+        merged[merged.length - 1] =
+            prev.copyWith(text: prev.text + curr.text);
+      } else {
+        merged.add(curr);
+      }
+    }
+    return merged;
+  }
+}

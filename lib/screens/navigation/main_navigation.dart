@@ -35,7 +35,7 @@ class _MainNavigationState extends State<MainNavigation> {
     // Theme Colors
     final Color bgColor = isDark ? const Color(0xFF0B0E2C) : const Color(0xFFF0F4F8);
     final Color appBarColor = isDark ? const Color(0xFF061F33) : const Color(0xFFD1D9E6);
-    final Color navBarColor = isDark ? const Color(0xFF0D1128) : Colors.white;
+    final Color navBarColor = isDark ? const Color(0xFF0D1128) : Colors.blueGrey.withOpacity(0.1);
     final Color textColor = isDark ? Colors.white : const Color(0xFF1A1C2E);
 
     return Scaffold(
@@ -50,13 +50,6 @@ class _MainNavigationState extends State<MainNavigation> {
         backgroundColor: appBarColor,
         elevation: 0,
         actions: _currentIndex == 1 ? [
-          IconButton(
-            icon: Icon(Icons.refresh, color: textColor),
-            onPressed: () {
-              // This requires a GlobalKey if you want to trigger 
-              // the refresh inside DocumentsScreen from here.
-            },
-          )
         ] : null,
       ),
       body: IndexedStack(
@@ -99,7 +92,7 @@ class _MainNavigationState extends State<MainNavigation> {
   Widget _buildNavItem(int index, IconData icon, String label) {
     bool isSelected = _currentIndex == index;
     Color activeColor = Colors.blueAccent;
-    Color inactiveColor = _isDarkMode ? Colors.grey : Colors.blueGrey.withOpacity(0.6);
+    Color inactiveColor = _isDarkMode ? Colors.grey : Colors.blueGrey;
 
     return GestureDetector(
       onTap: () => setState(() => _currentIndex = index),

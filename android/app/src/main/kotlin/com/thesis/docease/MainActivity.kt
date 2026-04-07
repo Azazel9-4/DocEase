@@ -1,4 +1,4 @@
-package com.example.thesis_app_v5
+package com.thesis.docease
 
 import io.flutter.embedding.android.FlutterActivity
 

@@ -1,0 +1,1418 @@
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as p;
+
+import '/logic/editor_bloc/editor_bloc.dart';
+import '/logic/editor_bloc/editor_event.dart';
+import '/logic/editor_bloc/template_service.dart';
+import '/logic/editor_bloc/custom_template_model.dart';
+import '/logic/editor_bloc/custom_template_service.dart';
+import '/screens/editor/editor.dart';
+import '/services/print_view.dart';
+
+class TemplatePickerScreen extends StatefulWidget {
+  final String correctedText;
+  final String fileName;
+  final bool isDarkMode;
+
+
+  const TemplatePickerScreen({
+    super.key,
+    required this.correctedText,
+    required this.fileName,
+    required this.isDarkMode,
+  });
+
+  @override
+  State<TemplatePickerScreen> createState() =>
+      _TemplatePickerScreenState();
+}
+
+class _TemplatePickerScreenState
+    extends State<TemplatePickerScreen>
+    with SingleTickerProviderStateMixin {
+  late TabController _tabController;
+  bool _isGenerating = false;
+
+  final _headerFocusNode = FocusNode();
+  final _footerFocusNode = FocusNode();
+
+  // Paper size selection (also passed to editor)
+  PaperSize _previewPaperSize = PaperSize.a4;
+
+  // Custom template state
+  final _customNameCtrl = TextEditingController(text: 'My Template');
+  final _customHeaderCtrl = TextEditingController();
+  final _customFooterCtrl = TextEditingController();
+
+  // Background mode
+  TemplateImageMode _imageMode = TemplateImageMode.zones;
+  File? _backgroundImage;
+  double _backgroundOpacity = 0.9;
+  static const double _bodyTopMargin = 160;
+
+  double _bgScale = 1.0;
+  double _bgOffsetX = 0.0;
+  double _bgOffsetY = 0.0;
+  double _fitScale = 1.0;
+
+  // Collapse/expand state for custom bar
+  bool _isCustomBarExpanded = true;
+
+  // Saved custom templates
+  List<CustomTemplate> _savedTemplates =[];
+  CustomTemplate? _selectedSavedTemplate;
+
+  final ImagePicker _picker = ImagePicker();
+
+  // Interactive viewer controller — reset when tab or paper size changes
+  final TransformationController _transformationController =
+      TransformationController();
+
+  final List<_TemplateOption> _builtInTemplates =[
+    _TemplateOption(
+      id: 'none',
+      title: 'None',
+      subtitle: 'Plain scanned text only',
+      icon: Icons.article_outlined,
+      iconColor: Color(0xFF185FA5),
+      iconBg: Color(0xFFE6F1FB),
+      header: '',
+      footer: '',
+      marginCm: 2.54,
+    ),
+    _TemplateOption(
+      id: 'essay',
+      title: 'Essay',
+      subtitle: 'Title · Body · Conclusion',
+      icon: Icons.edit_note_rounded,
+      iconColor: Color(0xFF0F6E56),
+      iconBg: Color(0xFFE1F5EE),
+      header: 'Essay Title',
+      footer: 'Page 1 of 1',
+      marginCm: 2.54,
+    ),
+    _TemplateOption(
+      id: 'letter',
+      title: 'Letter',
+      subtitle: 'Date · Recipient · Signature',
+      icon: Icons.mail_outline_rounded,
+      iconColor: Color(0xFF7F77DD),
+      iconBg: Color(0xFFEEEDFE),
+      header: '',
+      footer: '',
+      marginCm: 2.54,
+    ),
+    _TemplateOption(
+      id: 'report',
+      title: 'Report',
+      subtitle: 'Header · Sections · Pages',
+      icon: Icons.summarize_outlined,
+      iconColor: Color(0xFF993C1D),
+      iconBg: Color(0xFFFAECE7),
+      header: 'Report Title',
+      footer: 'Page 1',
+      marginCm: 2.54,
+    ),
+    _TemplateOption(
+      id: 'memo',
+      title: 'Memo',
+      subtitle: 'To · From · Subject',
+      icon: Icons.sticky_note_2_outlined,
+      iconColor: Color(0xFFBA7517),
+      iconBg: Color(0xFFFAEEDA),
+      header: '',
+      footer: '',
+      marginCm: 3.18,
+    ),
+    _TemplateOption(
+      id: 'custom',
+      title: 'Custom',
+      subtitle: 'Your own header & footer',
+      icon: Icons.tune_rounded,
+      iconColor: Color(0xFF3C3489),
+      iconBg: Color(0xFFCECBF6),
+      header: '',
+      footer: '',
+      marginCm: 2.54,
+    ),
+  ];
+
+  // ── Paper size helpers ───────────────────────────────────────────────────────
+  Size _paperDimensions(PaperSize size) {
+    switch (size) {
+      case PaperSize.a4:    return const Size(794, 1123);
+      case PaperSize.short: return const Size(816, 1056);
+      case PaperSize.long:  return const Size(816, 1344);
+    }
+  }
+
+  // ── Lifecycle ────────────────────────────────────────────────────────────────
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(
+        length: _builtInTemplates.length, vsync: this);
+    _tabController.addListener(() {
+      setState(() {
+        _isCustomBarExpanded = true;
+      });
+      _resetPreviewZoom();
+    });
+    _loadSavedTemplates();
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    _customNameCtrl.dispose();
+    _customHeaderCtrl.dispose();
+    _customFooterCtrl.dispose();
+    _transformationController.dispose();
+    _headerFocusNode.dispose();
+    _footerFocusNode.dispose();
+    super.dispose();
+  }
+
+  void _resetPreviewZoom() {
+    _transformationController.value = Matrix4.identity()..scale(_fitScale, _fitScale);
+  }
+
+  Future<void> _loadSavedTemplates() async {
+    final saved = await CustomTemplateService.getAll();
+    setState(() => _savedTemplates = saved);
+  }
+
+  _TemplateOption get _selected =>
+      _builtInTemplates[_tabController.index];
+  bool get _isCustomTab => _selected.id == 'custom';
+  bool get _isBackground =>
+      _isCustomTab && _imageMode == TemplateImageMode.background;
+
+  // ── Image picking ────────────────────────────────────────────────────────────
+  Future<void> _pickBackgroundImage() async {
+    final picked = await _picker.pickImage(source: ImageSource.gallery);
+    if (picked == null) return;
+    final dir = await getApplicationDocumentsDirectory();
+    final folder = Directory('${dir.path}/DocEase/TemplateImages');
+    if (!await folder.exists()) await folder.create(recursive: true);
+    final ext = p.extension(picked.path);
+    final fileName = 'bg_${DateTime.now().millisecondsSinceEpoch}$ext';
+    final savedFile = await File(picked.path).copy('${folder.path}/$fileName');
+    setState(() => _backgroundImage = savedFile);
+  }
+
+  // ── Image adjust sheet ───────────────────────────────────────────────────────
+  Future<void> _showImageAdjustSheet() async {
+    if (_backgroundImage == null) return;
+    double tempScale = _bgScale;
+    double tempOffsetX = _bgOffsetX;
+    double tempOffsetY = _bgOffsetY;
+    Offset startFocalPoint = Offset.zero;
+    double startScale = 1.0;
+    Offset startOffset = Offset.zero;
+
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => StatefulBuilder(
+        builder: (context, setSheet) => Container(
+          height: MediaQuery.of(context).size.height * 0.75,
+          decoration: const BoxDecoration(
+            color: Color(0xFF1A1A2E),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          child: Column(
+            children:[
+              const SizedBox(height: 12),
+              Container(
+                width: 40, height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.white24,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text('Adjust background image',
+                  style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 6),
+              const Text('Pinch to zoom · Drag to reposition',
+                  style: TextStyle(color: Colors.white54, fontSize: 12)),
+              const SizedBox(height: 16),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 24),
+                  child: AspectRatio(
+                    aspectRatio: 794 / 1123,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          border: Border.all(color: Colors.white30),
+                        ),
+                        child: GestureDetector(
+                          onScaleStart: (d) {
+                            startFocalPoint = d.focalPoint;
+                            startScale = tempScale;
+                            startOffset = Offset(tempOffsetX, tempOffsetY);
+                          },
+                          onScaleUpdate: (d) {
+                            setSheet(() {
+                              tempScale = (startScale * d.scale).clamp(0.5, 4.0);
+                              final delta = d.focalPoint - startFocalPoint;
+                              tempOffsetX = startOffset.dx + delta.dx;
+                              tempOffsetY = startOffset.dy + delta.dy;
+                            });
+                          },
+                          child: ClipRect(
+                            child: Transform.translate(
+                              offset: Offset(tempOffsetX, tempOffsetY),
+                              child: Transform.scale(
+                                scale: tempScale,
+                                child: Opacity(
+                                  opacity: _backgroundOpacity,
+                                  child: Image.file(_backgroundImage!,
+                                      fit: BoxFit.cover,
+                                      width: double.infinity,
+                                      height: double.infinity),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Row(
+                  children:[
+                    Expanded(
+                      child: GestureDetector(
+                        onTap: () => setSheet(() {
+                          tempScale = 1.0;
+                          tempOffsetX = 0.0;
+                          tempOffsetY = 0.0;
+                        }),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          decoration: BoxDecoration(
+                            color: Colors.white12,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: const Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children:[
+                              Icon(Icons.refresh_rounded, color: Colors.white, size: 16),
+                              SizedBox(width: 6),
+                              Text('Reset', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500)),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      flex: 2,
+                      child: GestureDetector(
+                        onTap: () {
+                          setState(() {
+                            _bgScale = tempScale;
+                            _bgOffsetX = tempOffsetX;
+                            _bgOffsetY = tempOffsetY;
+                          });
+                          Navigator.pop(context);
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF3C3489),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: const Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children:[
+                              Icon(Icons.check_rounded, color: Colors.white, size: 16),
+                              SizedBox(width: 6),
+                              Text('Apply', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 28),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ── Save custom template dialog ──────────────────────────────────────────────
+  Future<void> _showSaveTemplateDialog() async {
+    final nameCtrl = TextEditingController(text: _customNameCtrl.text);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Row(
+          children:[
+            Icon(Icons.bookmark_add_outlined, color: Color(0xFF3C3489)),
+            SizedBox(width: 8),
+            Text('Save Template', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children:[
+            const Text('Give your template a name:',
+                style: TextStyle(fontSize: 13, color: Colors.grey)),
+            const SizedBox(height: 10),
+            TextField(
+              controller: nameCtrl,
+              autofocus: true,
+              decoration: InputDecoration(
+                hintText: 'e.g. School Report Header',
+                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: const BorderSide(color: Color(0xFF3C3489), width: 1.5),
+                ),
+              ),
+            ),
+          ],
+        ),
+        actions:[
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text('Cancel', style: TextStyle(color: Colors.grey.shade500)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF3C3489),
+              foregroundColor: Colors.white,
+              elevation: 0,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    final template = CustomTemplate(
+      name: nameCtrl.text.isEmpty ? 'My Template' : nameCtrl.text,
+      headerText: _customHeaderCtrl.text,
+      footerText: _customFooterCtrl.text,
+      headerImagePath: null,
+      footerImagePath: null,
+      backgroundImagePath: _imageMode == TemplateImageMode.background
+          ? _backgroundImage?.path
+          : null,
+      imageMode: _imageMode,
+      backgroundOpacity: _backgroundOpacity,
+      bodyTopMargin: _bodyTopMargin,
+      createdAt: DateTime.now(),
+    );
+
+    await CustomTemplateService.save(template);
+    await _loadSavedTemplates();
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Template "${template.name}" saved!',
+            style: const TextStyle(color: Colors.white, fontSize: 13)),
+        backgroundColor: const Color(0xFF3C3489),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ));
+    }
+  }
+
+  // ── Load / delete saved template ─────────────────────────────────────────────
+  void _loadSavedTemplateIntoEditor(CustomTemplate t) {
+    setState(() {
+      _selectedSavedTemplate = t;
+      _imageMode = t.imageMode;
+      _backgroundOpacity = t.backgroundOpacity;
+      _backgroundImage = t.backgroundImageFile;
+      _customHeaderCtrl.text = t.headerText;
+      _customFooterCtrl.text = t.footerText;
+      _customNameCtrl.text = t.name;
+    });
+  }
+
+  Future<void> _deleteSavedTemplate(CustomTemplate t) async {
+    await CustomTemplateService.delete(t.id!);
+    await _loadSavedTemplates();
+    if (_selectedSavedTemplate?.id == t.id) {
+      setState(() => _selectedSavedTemplate = null);
+    }
+  }
+
+  // ── Build config ─────────────────────────────────────────────────────────────
+  TemplateConfig _buildConfig() {
+    final opt = _selected;
+    if (opt.id == 'none') {
+      return TemplateConfig(
+          id: 'none', title: 'No Template', header: '', footer: '', body: widget.correctedText);
+    }
+    if (opt.id == 'custom') {
+      return TemplateConfig(
+        id: 'custom',
+        title: _customNameCtrl.text,
+        header: _customHeaderCtrl.text,
+        footer: _customFooterCtrl.text,
+        body: widget.correctedText,
+        backgroundImagePath: _imageMode == TemplateImageMode.background
+            ? _backgroundImage?.path
+            : null,
+        backgroundOpacity: _backgroundOpacity,
+        bodyTopMargin: _bodyTopMargin,
+      );
+    }
+    return TemplateService.builtInTemplates(widget.correctedText)
+        .firstWhere((t) => t.id == opt.id);
+  }
+
+  // ── Proceed ──────────────────────────────────────────────────────────────────
+  Future<void> _proceed(String format) async {
+    setState(() => _isGenerating = true);
+    final config = _buildConfig();
+    final isBuiltIn = _selected.id != 'none' && _selected.id != 'custom';
+
+    try {
+      EditorBloc _makeBloc() {
+        final bloc = EditorBloc();
+        bloc.add(SetHeaderFooter(
+          header: _isBackground ? '' : config.header,
+          footer: _isBackground ? '' : config.footer,
+          locked: isBuiltIn || _selected.id == 'custom',
+          backgroundImagePath: _isBackground ? _backgroundImage?.path : null,
+          backgroundOpacity: _backgroundOpacity,
+          bodyTopMargin: _bodyTopMargin,
+          bgScale: _bgScale,
+          bgOffsetX: _bgOffsetX,
+          bgOffsetY: _bgOffsetY,
+          marginCm: _selected.marginCm,
+          showHeaderFooter: _selected.id == 'custom' && !_isBackground,
+          paperSize: _previewPaperSize,
+        ));
+        return bloc;
+      }
+
+      if (format == 'edit') {
+        if (mounted) {
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (context) => BlocProvider.value(
+                value: _makeBloc(),
+                child: TextEditorScreen(
+                  initialText: config.body,
+                  fileName: widget.fileName,
+                  isDarkMode: widget.isDarkMode,
+                ),
+              ),
+            ),
+          );
+        }
+        return;
+      }
+
+      if (format == 'pdf') {
+        await TemplateService.generatePdf(
+          template: config,
+          fileName: widget.fileName,
+          backgroundImagePath: _isBackground ? _backgroundImage?.path : null,
+          backgroundOpacity: _backgroundOpacity,
+          bodyTopMargin: _bodyTopMargin,
+        );
+      } else if (format == 'docx') {
+        await TemplateService.generateDocx(
+          template: config,
+          fileName: widget.fileName,
+        );
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Saved as ${widget.fileName}.$format'),
+          backgroundColor: Colors.green,
+        ));
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder: (context) => BlocProvider.value(
+              value: _makeBloc(),
+              child: TextEditorScreen(
+                initialText: config.body,
+                fileName: widget.fileName,
+                isDarkMode: widget.isDarkMode,
+              ),
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red));
+      }
+    } finally {
+      if (mounted) setState(() => _isGenerating = false);
+    }
+  }
+
+  // ── Build ────────────────────────────────────────────────────────────────────
+// ── Build ────────────────────────────────────────────────────────────────────
+  @override
+  Widget build(BuildContext context) {
+    final opt = _selected;
+
+    // Use your manual dark mode state
+    final bool isDark = widget.isDarkMode; 
+
+    // 1. App Bar & Tabs Colors 
+    final Color appBarBg = isDark ? const Color(0xFF061F33) : Colors.white;
+    final Color appBarText = isDark ? Colors.white : const Color(0xFF061F33);
+    final Color tabUnselected = isDark ? Colors.white54 : Colors.black54;
+
+    // 2. Bottom Bar Container Colors
+    final Color bottomBarBg = isDark ? const Color(0xFF1A1C2E) : Colors.white;
+    final Color borderColor = isDark ? Colors.white10 : Colors.grey.shade300;
+
+    // 3. "Use this template" Button Colors 
+    //final Color buttonBg = isDark ? const Color(0xFF061F33) : Colors.white;
+    final Color buttonBg = isDark ?  Colors.white : const Color(0xFF061F33);
+    //final Color buttonText = isDark ? Colors.white : const Color(0xFF061F33);
+    final Color buttonText = isDark ? const Color(0xFF061F33) : Colors.white;
+    final BorderSide buttonBorder = isDark 
+        ? BorderSide.none 
+        : const BorderSide(color: Color(0xFF061F33), width: 1.5);
+
+    return Scaffold(
+      resizeToAvoidBottomInset: false,
+      backgroundColor: const Color(0xFFD6D6D6),
+      appBar: AppBar(
+        backgroundColor: appBarBg, // <-- APPLIED HERE
+        elevation: 0,
+        title: Text('Choose a Template',
+            style: TextStyle(color: appBarText, fontSize: 16)), // <-- APPLIED HERE (removed const)
+        leading: IconButton(
+          icon: Icon(Icons.arrow_back, color: appBarText), // <-- APPLIED HERE (removed const)
+          onPressed: () => Navigator.pop(context),
+        ),
+        bottom: TabBar(
+          controller: _tabController,
+          isScrollable: true,
+          tabAlignment: TabAlignment.start,
+          indicatorColor: appBarText, // <-- APPLIED HERE
+          indicatorWeight: 3,
+          labelColor: appBarText, // <-- APPLIED HERE
+          unselectedLabelColor: tabUnselected, // <-- APPLIED HERE
+          labelStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+          unselectedLabelStyle: const TextStyle(fontSize: 13),
+          tabs: _builtInTemplates
+              .map((t) => Tab(
+                    child: Row(
+                      children:[
+                        Icon(t.icon, size: 15),
+                        const SizedBox(width: 6),
+                        Text(t.title),
+                      ],
+                    ),
+                  ))
+              .toList(),
+        ),
+      ),
+      body: SafeArea(
+        child: Column(
+          children:[
+            // ── Custom input bar (only for custom tab with collapse animation) ──
+            if (_isCustomTab)
+              AnimatedSize(
+                duration: const Duration(milliseconds: 250),
+                curve: Curves.fastOutSlowIn,
+                alignment: Alignment.topCenter,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  width: double.infinity,
+                  color: opt.iconBg,
+                  child: _isCustomBarExpanded
+                      ? SingleChildScrollView(
+                          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                          child: _buildCustomInputBar(),
+                        )
+                      : GestureDetector(
+                          onTap: () => setState(() => _isCustomBarExpanded = true),
+                          behavior: HitTestBehavior.opaque,
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 10),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children:[
+                                Icon(Icons.keyboard_arrow_down_rounded, color: opt.iconColor, size: 18),
+                                const SizedBox(width: 6),
+                                Text('Swipe down or tap to expand settings',
+                                    style: TextStyle(fontSize: 11, color: opt.iconColor, fontWeight: FontWeight.w600)),
+                              ],
+                            ),
+                          ),
+                        ),
+                ),
+              ),
+
+            // ── Paper size toggle + preview label row ───────────────────────
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onVerticalDragUpdate: (details) {
+                if (!_isCustomTab) return;
+                
+                if (details.delta.dy < -2 && _isCustomBarExpanded) {
+                  setState(() => _isCustomBarExpanded = false);
+                } else if (details.delta.dy > 2 && !_isCustomBarExpanded) {
+                  setState(() => _isCustomBarExpanded = true);
+                }
+              },
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
+                child: Row(
+                  children:[
+                    Icon(Icons.preview_rounded, size: 14, color: Colors.grey.shade600),
+                    const SizedBox(width: 6),
+                    Text('Preview',
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.grey.shade600)),
+                    const Spacer(),
+                    _PaperSizeToggle(
+                      value: _previewPaperSize,
+                      onChanged: (size) {
+                        setState(() => _previewPaperSize = size);
+                        _resetPreviewZoom();
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+            // ── Full-page interactive preview ───────────────────────────────
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(16),
+                  child: _buildPagePreview(opt),
+                ),
+              ),
+            ),
+
+            // ── Bottom button ───────────────────────────────────────────────
+            Container(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
+              decoration: BoxDecoration(
+                color: bottomBarBg, // <-- APPLIED HERE
+                border: Border(
+                  top: BorderSide(color: borderColor, width: 0.5), // <-- APPLIED HERE
+                ),
+              ),
+              child: SizedBox(
+                width: double.infinity,
+                height: 52,
+                child: ElevatedButton.icon(
+                  onPressed: _isGenerating ? null : () => _proceed('edit'),
+                  icon: _isGenerating
+                      ? SizedBox(
+                          width: 18, height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: buttonText)) // <-- APPLIED HERE
+                      : Icon(Icons.arrow_forward_rounded, color: buttonText), // <-- APPLIED HERE
+                  label: Text(
+                    _isGenerating ? 'Generating...' : 'Use this template',
+                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: buttonText), // <-- APPLIED HERE
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: buttonBg, // <-- APPLIED HERE
+                    foregroundColor: buttonText, // <-- APPLIED HERE
+                    disabledBackgroundColor: isDark ? Colors.white24 : Colors.grey.shade300,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    side: buttonBorder, // <-- APPLIED HERE
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── Full-page preview with InteractiveViewer ─────────────────────────────────
+  Widget _buildPagePreview(_TemplateOption opt) {
+    final pageDim = _paperDimensions(_previewPaperSize);
+    final double marginPx = opt.marginCm * (96.0 / 2.54);
+    final config = _buildConfig();
+    
+
+    // Resolve header and footer text for preview
+    final String headerText = _isCustomTab ? _customHeaderCtrl.text : opt.header;
+    final String footerText = _isCustomTab ? _customFooterCtrl.text : opt.footer;
+    final bool showHeaderFooter =
+        opt.id != 'none' && opt.id != 'letter' && opt.id != 'memo' && !_isBackground;
+
+    // Body preview text (truncated)
+    final String bodyText = config.body.length > 800
+        ? '${config.body.substring(0, 800)}...'
+        : config.body;
+
+    return LayoutBuilder(builder: (context, constraints) {
+      // Fit-to-width scale, matching PrintView behaviour
+      final double fitScale = (constraints.maxWidth) / pageDim.width;
+
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+if (_fitScale != fitScale) {
+  _fitScale = fitScale;
+  _transformationController.value =
+      Matrix4.identity()..scale(fitScale, fitScale);
+}
+      });
+
+      return Container(
+          color: const Color(0xFFD6D6D6),
+          child: InteractiveViewer(
+            transformationController: _transformationController,
+            minScale: 0.3,
+            maxScale: 3.0,
+            constrained: false,
+            panAxis: PanAxis.vertical, // Add this to lock side-to-side movement
+            boundaryMargin: const EdgeInsets.symmetric(vertical: 60, horizontal: 0), // Remove horizontal margin
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: SizedBox(
+                width: pageDim.width,
+                height: pageDim.height,
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    boxShadow:[
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.2),
+                        blurRadius: 16,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Stack(
+                    clipBehavior: Clip.hardEdge,
+                    children:[
+                      // ── Background image ──────────────────────────────────
+                      if (_isBackground && _backgroundImage != null)
+                        Positioned.fill(
+                          child: ClipRect(
+                            child: Transform.translate(
+                              offset: Offset(_bgOffsetX, _bgOffsetY),
+                              child: Transform.scale(
+                                scale: _bgScale,
+                                child: Opacity(
+                                  opacity: _backgroundOpacity,
+                                  child: Image.file(
+                                    _backgroundImage!,
+                                    fit: BoxFit.cover,
+                                    width: double.infinity,
+                                    height: double.infinity,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+
+                      // ── Header ────────────────────────────────────────────
+                      if (showHeaderFooter && headerText.isNotEmpty)
+                        Positioned(
+                          top: 0, left: 0, right: 0,
+                          height: marginPx,
+                          child: Padding(
+                            padding: EdgeInsets.symmetric(horizontal: marginPx),
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children:[
+                                Row(
+                                  children:[
+                                    Expanded(
+                                      child: Text(
+                                        headerText,
+                                        style: const TextStyle(
+                                          fontSize: 9,
+                                          fontWeight: FontWeight.w600,
+                                          color: Color(0xFF555555),
+                                        ),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                    const Text('Page 1 of 1',
+                                        style: TextStyle(fontSize: 9, color: Color(0xFF888888))),
+                                  ],
+                                ),
+                                const SizedBox(height: 4),
+                                Divider(height: 1, color: Colors.grey.shade300),
+                              ],
+                            ),
+                          ),
+                        ),
+
+                      // ── Body text ─────────────────────────────────────────
+                      Positioned(
+                        top: _isBackground ? _bodyTopMargin : marginPx,
+                        left: marginPx,
+                        right: marginPx,
+                        bottom: marginPx,
+                        child: Text(
+                          bodyText,
+                          style: const TextStyle(
+                            // Use exactly the same mathematical conversion as PrintView
+                            // 14pt * (96 DPI / 72 PPI) = 18.66 screen pixels
+                            fontSize: 18.66, 
+                            
+                            // Match the MS Word density we applied to the editor
+                            height: 1.15, 
+                            
+                            // Match the exact black color Quill uses
+                            color: Colors.black, 
+                          ),
+                          overflow: TextOverflow.fade,
+                        ),
+                      ),
+
+                      // ── Footer ────────────────────────────────────────────
+                      if (showHeaderFooter && footerText.isNotEmpty)
+                        Positioned(
+                          bottom: 0, left: 0, right: 0,
+                          height: marginPx,
+                          child: Padding(
+                            padding: EdgeInsets.symmetric(horizontal: marginPx),
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children:[
+                                Divider(height: 1, color: Colors.grey.shade300),
+                                const SizedBox(height: 4),
+                                Text(
+                                  footerText,
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(
+                                    fontSize: 9,
+                                    color: Color(0xFF888888),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+
+                      // ── Background placeholder ────────────────────────────
+                      if (_isBackground && _backgroundImage == null)
+                        Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children:[
+                              Icon(Icons.wallpaper_rounded,
+                                  size: 48, color: Colors.grey.shade300),
+                              const SizedBox(height: 10),
+                              Text('Pick a background image above',
+                                  style: TextStyle(
+                                      fontSize: 13, color: Colors.grey.shade400)),
+                            ],
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+      );
+    });
+  }
+
+  // ── Custom input bar ─────────────────────────────────────────────────────────
+  Widget _buildCustomInputBar() {
+    const iconColor = Color(0xFF3C3489);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children:[
+        // Saved templates row
+        if (_savedTemplates.isNotEmpty) ...[
+          Text('Saved templates',
+              style: TextStyle(
+                  fontSize: 10, fontWeight: FontWeight.w700, color: iconColor)),
+          const SizedBox(height: 6),
+          SizedBox(
+            height: 36,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              itemCount: _savedTemplates.length,
+              itemBuilder: (context, index) {
+                final t = _savedTemplates[index];
+                final isSelected = _selectedSavedTemplate?.id == t.id;
+                return Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: GestureDetector(
+                    onTap: () => _loadSavedTemplateIntoEditor(t),
+                    onLongPress: () async {
+                      final del = await showDialog<bool>(
+                        context: context,
+                        builder: (_) => AlertDialog(
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16)),
+                          title: const Text('Delete template'),
+                          content: Text('Delete "${t.name}"?'),
+                          actions:[
+                            TextButton(
+                              onPressed: () => Navigator.pop(context, false),
+                              child: const Text('Cancel'),
+                            ),
+                            ElevatedButton(
+                              onPressed: () => Navigator.pop(context, true),
+                              style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.red,
+                                  foregroundColor: Colors.white,
+                                  elevation: 0),
+                              child: const Text('Delete'),
+                            ),
+                          ],
+                        ),
+                      );
+                      if (del == true) _deleteSavedTemplate(t);
+                    },
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 150),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: isSelected ? iconColor : Colors.white.withOpacity(0.8),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                          color: isSelected ? iconColor : iconColor.withOpacity(0.3),
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children:[
+                          Icon(Icons.bookmark_rounded,
+                              size: 12,
+                              color: isSelected ? Colors.white : iconColor),
+                          const SizedBox(width: 4),
+                          Text(t.name,
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                                color: isSelected ? Colors.white : iconColor,
+                              )),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 10),
+          Divider(height: 1, color: iconColor.withOpacity(0.2)),
+          const SizedBox(height: 10),
+        ],
+
+        // Mode toggle
+        Row(
+          children:[
+            Text('Image mode',
+                style: TextStyle(
+                    fontSize: 11, fontWeight: FontWeight.w700, color: iconColor)),
+            const Spacer(),
+            _ModeToggle(
+              value: _imageMode,
+              iconColor: iconColor,
+              onChanged: (mode) => setState(() => _imageMode = mode),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+
+        // Background mode controls
+        if (_imageMode == TemplateImageMode.background) ...[
+          _backgroundPickerZone(iconColor),
+          const SizedBox(height: 10),
+          _sliderRow(
+            label: 'Opacity',
+            value: _backgroundOpacity,
+            min: 0.3,
+            max: 1.0,
+            displayValue: '${(_backgroundOpacity * 100).round()}%',
+            iconColor: iconColor,
+            onChanged: (v) => setState(() => _backgroundOpacity = v),
+          ),
+          const SizedBox(height: 6),
+        ],
+
+        // Zones mode — header and footer text fields only
+        if (_imageMode == TemplateImageMode.zones) ...[
+          _labeledTextField(
+            label: 'Header',
+            controller: _customHeaderCtrl,
+            hint: 'e.g. My School Report',
+            iconColor: iconColor,
+            focusNode: _headerFocusNode,
+          ),
+          const SizedBox(height: 10),
+          _labeledTextField(
+            label: 'Footer',
+            controller: _customFooterCtrl,
+            hint: 'e.g. Page 1 | Your Name',
+            iconColor: iconColor,
+            focusNode: _footerFocusNode,
+
+          ),
+        ],
+
+        const SizedBox(height: 12),
+
+        // Save button
+        GestureDetector(
+          onTap: _showSaveTemplateDialog,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: BoxDecoration(
+              color: iconColor,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children:[
+                Icon(Icons.bookmark_add_outlined, color: Colors.white, size: 15),
+                SizedBox(width: 6),
+                Text('Save this template',
+                    style: TextStyle(
+                        color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+ Widget _labeledTextField({
+  required String label,
+  required TextEditingController controller,
+  required String hint,
+  required Color iconColor,
+  FocusNode? focusNode,
+  TextInputAction? textInputAction,
+  ValueChanged<String>? onSubmitted,
+}) {
+
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(label,
+          style: TextStyle(
+              fontSize: 11, fontWeight: FontWeight.w700, color: iconColor)),
+      const SizedBox(height: 4),
+      TextField(
+        controller: controller,
+        focusNode: focusNode,
+        textInputAction: textInputAction,
+        onSubmitted: onSubmitted,
+        maxLines: null,
+        onChanged: (_) => setState(() {}),
+        style: TextStyle(fontSize: 13, color: Colors.black),
+        decoration: InputDecoration(
+          hintText: hint,
+          hintStyle: TextStyle(fontSize: 12, color: Colors.grey.shade400),
+          filled: true,
+          fillColor: Colors.white,
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: BorderSide(color: iconColor.withOpacity(0.3)),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: BorderSide(color: iconColor.withOpacity(0.3)),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: BorderSide(color: iconColor, width: 1.5),
+          ),
+        ),
+      ),
+    ],
+  );
+}
+
+  Widget _backgroundPickerZone(Color iconColor) {
+    return GestureDetector(
+      onTap: _backgroundImage == null ? _pickBackgroundImage : null,
+      child: Container(
+        width: double.infinity,
+        height: 80,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: iconColor.withOpacity(0.3)),
+        ),
+        child: _backgroundImage == null
+            ? Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children:[
+                  Icon(Icons.wallpaper_rounded, color: iconColor, size: 24),
+                  const SizedBox(height: 4),
+                  Text('Tap to pick background image',
+                      style: TextStyle(
+                          fontSize: 12, color: iconColor, fontWeight: FontWeight.w500)),
+                ],
+              )
+            : Stack(
+                fit: StackFit.expand,
+                children:[
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(9),
+                    child: Transform.translate(
+                      offset: Offset(_bgOffsetX * 0.1, _bgOffsetY * 0.1),
+                      child: Transform.scale(
+                        scale: _bgScale,
+                        child: Opacity(
+                          opacity: _backgroundOpacity,
+                          child: Image.file(_backgroundImage!,
+                              fit: BoxFit.cover,
+                              width: double.infinity,
+                              height: double.infinity),
+                        ),
+                      ),
+                    ),
+                  ),
+                  Positioned(
+                    right: 6, top: 6,
+                    child: Row(
+                      children:[
+                        _circleBtn(Icons.crop_free_rounded, const Color(0xFF3C3489),
+                            _showImageAdjustSheet),
+                        const SizedBox(width: 4),
+                        _circleBtn(Icons.edit_outlined, iconColor, _pickBackgroundImage),
+                        const SizedBox(width: 4),
+                        _circleBtn(Icons.close, Colors.red, () {
+                          setState(() {
+                            _backgroundImage = null;
+                            _bgScale = 1.0;
+                            _bgOffsetX = 0.0;
+                            _bgOffsetY = 0.0;
+                          });
+                        }),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+      ),
+    );
+  }
+
+  Widget _circleBtn(IconData icon, Color color, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(4),
+        decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        child: Icon(icon, color: Colors.white, size: 12),
+      ),
+    );
+  }
+
+  Widget _sliderRow({
+    required String label,
+    required double value,
+    required double min,
+    required double max,
+    required String displayValue,
+    required Color iconColor,
+    required ValueChanged<double> onChanged,
+  }) {
+    return Row(
+      children:[
+        Text(label,
+            style: TextStyle(
+                fontSize: 10, fontWeight: FontWeight.w600, color: iconColor)),
+        Expanded(
+          child: SliderTheme(
+            data: SliderThemeData(
+              trackHeight: 2,
+              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+              activeTrackColor: iconColor,
+              inactiveTrackColor: iconColor.withOpacity(0.2),
+              thumbColor: iconColor,
+            ),
+            child: Slider(value: value, min: min, max: max, onChanged: onChanged),
+          ),
+        ),
+        SizedBox(
+          width: 44,
+          child: Text(displayValue,
+              style: TextStyle(
+                  fontSize: 10, fontWeight: FontWeight.w700, color: iconColor),
+              textAlign: TextAlign.right),
+        ),
+      ],
+    );
+  }
+}
+
+// ── Paper size toggle ──────────────────────────────────────────────────────────
+class _PaperSizeToggle extends StatelessWidget {
+  final PaperSize value;
+  final ValueChanged<PaperSize> onChanged;
+
+  const _PaperSizeToggle({required this.value, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.grey.shade200,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      padding: const EdgeInsets.all(2),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children:[
+          _tab('A4', PaperSize.a4),
+          _tab('Short', PaperSize.short),
+          _tab('Long', PaperSize.long),
+        ],
+      ),
+    );
+  }
+
+  Widget _tab(String label, PaperSize size) {
+    final bool active = value == size;
+    return GestureDetector(
+      onTap: () => onChanged(size),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        decoration: BoxDecoration(
+          color: active ? const Color(0xFF061F33) : Colors.transparent,
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Text(label,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: active ? Colors.white : Colors.grey.shade600,
+            )),
+      ),
+    );
+  }
+}
+
+// ── Mode toggle ────────────────────────────────────────────────────────────────
+class _ModeToggle extends StatelessWidget {
+  final TemplateImageMode value;
+  final Color iconColor;
+  final ValueChanged<TemplateImageMode> onChanged;
+
+  const _ModeToggle({
+    required this.value,
+    required this.iconColor,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: iconColor.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      padding: const EdgeInsets.all(2),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children:[
+          _tab('Zones', Icons.view_agenda_outlined, TemplateImageMode.zones),
+          _tab('Background', Icons.wallpaper_rounded, TemplateImageMode.background),
+        ],
+      ),
+    );
+  }
+
+  Widget _tab(String label, IconData icon, TemplateImageMode mode) {
+    final bool active = value == mode;
+    return GestureDetector(
+      onTap: () => onChanged(mode),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: active ? iconColor : Colors.transparent,
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children:[
+            Icon(icon, size: 12, color: active ? Colors.white : iconColor),
+            const SizedBox(width: 4),
+            Text(label,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: active ? Colors.white : iconColor,
+                )),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Data class ─────────────────────────────────────────────────────────────────
+class _TemplateOption {
+  final String id;
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final Color iconColor;
+  final Color iconBg;
+  final String header;
+  final String footer;
+  final double marginCm;
+
+  const _TemplateOption({
+    required this.id,
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.iconColor,
+    required this.iconBg,
+    required this.header,
+    required this.footer,
+    required this.marginCm,
+  });
+}

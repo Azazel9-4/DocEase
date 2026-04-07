@@ -4,7 +4,7 @@ import 'logic/document_bloc/document_bloc.dart';
 import 'screens/splash_screen.dart';
 
 void main() {
-  runApp(
+  runApp( 
     BlocProvider(
       create: (context) => DocumentBloc(),
       child: const DocEaseApp(),

@@ -1,6 +1,11 @@
-// import 'dart:io';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:package_info_plus/package_info_plus.dart'; // Import for dynamic versioning
+
+import 'settings_info_screens.dart'; // Make sure the path is correct
+
+
 
 class SettingsScreen extends StatefulWidget {
   final bool isDarkMode; 
@@ -18,23 +23,44 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   String _storagePath = "Loading...";
+  String _appVersion = "1.0.0"; // Variable to hold dynamic version
+  late bool isDark;
 
   @override
   void initState() {
     super.initState();
+    isDark = widget.isDarkMode; // sync initial value
     _loadStoragePath();
+    _initPackageInfo(); // Initialize app version info
+  }
+
+  
+
+  // Fetch the real version from pubspec.yaml
+  Future<void> _initPackageInfo() async {
+    final info = await PackageInfo.fromPlatform();
+    setState(() {
+      _appVersion = info.version;
+    });
   }
 
   Future<void> _loadStoragePath() async {
-    final directory = await getApplicationDocumentsDirectory();
-    setState(() {
-      _storagePath = "${directory.path}/DocEase/Docs";
-    });
+    // If on Android, show the public path where DocEase saves files
+    if (Platform.isAndroid) {
+      setState(() {
+        _storagePath = "/Internal Storage/Documents/DocEase";
+      });
+    } else {
+      final directory = await getApplicationDocumentsDirectory();
+      setState(() {
+        _storagePath = "${directory.path}/DocEase/Docs";
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    bool isDark = widget.isDarkMode;
+    //bool isDark = widget.isDarkMode;
     Color textColor = isDark ? Colors.white : const Color(0xFF1A1C2E);
     Color subTextColor = isDark ? Colors.white54 : Colors.black54;
     Color iconColor = isDark ? Colors.white70 : Colors.blueGrey;
@@ -84,7 +110,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ListTile(
             contentPadding: EdgeInsets.zero,
             leading: Icon(isDark ? Icons.dark_mode : Icons.light_mode, color: iconColor),
-            title: Text("Dark Mode", style: TextStyle(color: textColor)),
+            title: Text(
+              isDark ? "Dark Mode" : "Light Mode",
+              style: TextStyle(color: textColor),
+            ),
             subtitle: Text(
               isDark ? "Optimized for low light" : "Optimized for daylight",
               style: TextStyle(color: subTextColor, fontSize: 12),
@@ -92,7 +121,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
             trailing: Switch(
               value: isDark,
               activeColor: Colors.blueAccent,
-              onChanged: (value) => widget.onThemeChanged(value),
+              onChanged: (value) {
+                setState(() => isDark = value); // 🔥 updates UI immediately
+                widget.onThemeChanged(value);   // 🔥 notify parent
+              },
             ),
           ),
 
@@ -106,7 +138,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
             title: Text("How to use", style: TextStyle(color: textColor)),
             trailing: Icon(Icons.chevron_right, color: subTextColor),
             onTap: () {
-              // Placeholder for tutorial or help dialog
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => HowToUseScreen(isDarkMode: isDark),
+                ),
+              );
             },
           ),
           ListTile(
@@ -114,7 +151,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
             leading: Icon(Icons.privacy_tip_outlined, color: iconColor),
             title: Text("Privacy Policy", style: TextStyle(color: textColor)),
             trailing: Icon(Icons.chevron_right, color: subTextColor),
-            onTap: () {},
+            onTap: () {
+              // Add this Navigator block:
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => PrivacyPolicyScreen(isDarkMode: isDark),
+                ),
+              );
+            },
           ),
 
           const SizedBox(height: 25),
@@ -126,7 +171,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             leading: Icon(Icons.info_outline, color: iconColor),
             title: Text("App Version", style: TextStyle(color: textColor)),
             trailing: Text(
-              "5.0.0 (Thesis Build)",
+              _appVersion, // Use dynamic version here
               style: TextStyle(color: subTextColor, fontWeight: FontWeight.bold),
             ),
           ),
@@ -143,27 +188,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 40),
 
           // DANGER ZONE
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.red.withOpacity(0.05),
-              foregroundColor: Colors.redAccent,
-              elevation: 0,
-              side: BorderSide(color: Colors.redAccent.withOpacity(0.5)),
-              padding: const EdgeInsets.symmetric(vertical: 15),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-            ),
-            onPressed: () {
-              _showClearDataDialog(context);
-            },
-            child: const Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(Icons.delete_sweep_rounded),
-                SizedBox(width: 10),
-                Text("Clear All App Data", style: TextStyle(fontWeight: FontWeight.bold)),
-              ],
-            ),
-          ),
+          // ElevatedButton(
+          // style: ElevatedButton.styleFrom(
+          //   backgroundColor: Colors.red.withOpacity(0.05),
+          //   foregroundColor: Colors.redAccent,
+          //   elevation: 0,
+          //   side: BorderSide(color: Colors.redAccent.withOpacity(0.5)),
+          //   padding: const EdgeInsets.symmetric(vertical: 15),
+          //   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          // ),
+          // onPressed: () {
+          //    _showClearDataDialog(context);
+          // },
+          // child: const Row(
+          //   mainAxisAlignment: MainAxisAlignment.center,
+          //   children: [
+          //     Icon(Icons.delete_sweep_rounded),
+          //     SizedBox(width: 10),
+          //     Text("Clear All App Data", style: TextStyle(fontWeight: FontWeight.bold)),
+          //   ],
+          // ),
+          // ),
+
         ],
       ),
     );
@@ -187,20 +233,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  void _showClearDataDialog(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("Clear Data?"),
-        content: const Text("This will permanently delete all scanned documents. This action cannot be undone."),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("Clear Everything", style: TextStyle(color: Colors.red)),
-          ),
-        ],
-      ),
-    );
-  }
+  //void _showClearDataDialog(BuildContext context) {
+  //  showDialog(
+  //    context: context,
+  //    builder: (context) => AlertDialog(
+  //      title: const Text("Clear Data?"),
+  //      content: const Text("This will permanently delete all scanned documents. This action cannot be undone."),
+  //      actions: [
+  //        TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
+  //        TextButton(
+  //          onPressed: () => Navigator.pop(context),
+  //          child: const Text("Clear Everything", style: TextStyle(color: Colors.red)),
+  //        ),
+  //      ],
+  //    ),
+  //  );
+  //}
 }

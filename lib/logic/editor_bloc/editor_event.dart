@@ -1,74 +1,178 @@
-import 'package:flutter/material.dart';
-import '../../services/print_view.dart';
-import 'editor_state.dart'; 
+// lib/logic/editor_bloc/editor_event.dart
 
-abstract class EditorEvent {}
+import 'package:flutter/material.dart';
+import 'package:flutter_quill/flutter_quill.dart' as quill;
+import '../../services/print_view.dart';
+import 'editor_state.dart';
+
+abstract class EditorEvent {
+  const EditorEvent();
+}
+
+// ─────────────────────────────────────────────────────────────
+// DOCUMENT / CONTENT
+// ─────────────────────────────────────────────────────────────
 
 class LoadInitialText extends EditorEvent {
   final String text;
   final String? fileName;
-  LoadInitialText(this.text, this.fileName);
+  const LoadInitialText({required this.text, this.fileName});
 }
 
-class UpdateText extends EditorEvent {
-  final String fullText;
-  UpdateText(this.fullText);
+class LoadJsonProject extends EditorEvent {
+  final String jsonString;
+  final String sourceFilePath;
+  const LoadJsonProject({
+    required this.jsonString,
+    required this.sourceFilePath,
+  });
 }
 
-// Formatting
-class ToggleBold extends EditorEvent {}
-class ToggleItalic extends EditorEvent {}
-class ToggleUnderline extends EditorEvent {}
-
-class ChangeAlignment extends EditorEvent {
-  final TextAlign alignment;
-  ChangeAlignment(this.alignment);
+class UpdateDocument extends EditorEvent {
+  final quill.Document document;
+  const UpdateDocument(this.document);
 }
 
-class ChangeFontSize extends EditorEvent {
-  final double size;
-  ChangeFontSize(this.size);
+class MarkSaved extends EditorEvent {
+  const MarkSaved();
 }
 
-class ChangeFontFamily extends EditorEvent {
-  final String font;
-  ChangeFontFamily(this.font);
-}
+// ─────────────────────────────────────────────────────────────
+// VIEW / DISPLAY
+// ─────────────────────────────────────────────────────────────
 
 class ChangePageSize extends EditorEvent {
   final PaperSize size;
-  ChangePageSize(this.size);
+  const ChangePageSize(this.size);
 }
 
-// View
-class TogglePrintView extends EditorEvent {}
-class ToggleHTMLView extends EditorEvent {}
-class ToggleToolbar extends EditorEvent {}
+class TogglePrintView extends EditorEvent {
+  const TogglePrintView();
+}
 
-// File
+class ToggleHTMLView extends EditorEvent {
+  const ToggleHTMLView();
+}
+
+class ToggleToolbar extends EditorEvent {
+  const ToggleToolbar();
+}
+
+// ─────────────────────────────────────────────────────────────
+// FILE NAME
+// ─────────────────────────────────────────────────────────────
+
 class ChangeFileName extends EditorEvent {
   final String newName;
-  ChangeFileName(this.newName);
+  const ChangeFileName(this.newName);
 }
 
-class MarkSaved extends EditorEvent {}
+// ─────────────────────────────────────────────────────────────
+// SAVE FORMAT SELECTION
+// ─────────────────────────────────────────────────────────────
 
-// Save
 class SelectSaveFormat extends EditorEvent {
   final SaveFormat format;
-  SelectSaveFormat(this.format);
+  const SelectSaveFormat(this.format);
 }
 
-class RequestSave extends EditorEvent {}
+// ─────────────────────────────────────────────────────────────
+// SAVE FLOW
+// ─────────────────────────────────────────────────────────────
 
-class SaveCompleted extends EditorEvent {}
-
-class SaveFailed extends EditorEvent {
-  final String error;
-  SaveFailed(this.error);
+class RequestSave extends EditorEvent {
+  const RequestSave();
 }
 
 class ResolveConflict extends EditorEvent {
-  final bool replace; // true = overwrite, false = keep both
-  ResolveConflict({required this.replace});
+  final bool replace;
+  const ResolveConflict({required this.replace});
+}
+
+class SaveCompleted extends EditorEvent {
+  const SaveCompleted();
+}
+
+class SaveFailed extends EditorEvent {
+  final String error;
+  const SaveFailed(this.error);
+}
+
+// ─────────────────────────────────────────────────────────────
+// HEADER / FOOTER / BACKGROUND
+// ─────────────────────────────────────────────────────────────
+
+class SetHeaderFooter extends EditorEvent {
+  final String header;
+  final String footer;
+  final bool locked;
+  final String? headerImagePath;
+  final String? footerImagePath;
+  final String? backgroundImagePath;
+  final double backgroundOpacity;
+  final double bodyTopMargin;
+  final double bgScale;
+  final double bgOffsetX;
+  final double bgOffsetY;
+  final double marginCm; // ← ADD THIS
+  final bool showHeaderFooter;
+  final PaperSize paperSize;
+
+
+  const SetHeaderFooter({
+    required this.header,
+    required this.footer,
+    required this.locked,
+    this.headerImagePath,
+    this.footerImagePath,
+    this.backgroundImagePath,
+    this.backgroundOpacity = 0.9,
+    this.bodyTopMargin = 160,
+    this.bgScale = 1.0,
+    this.bgOffsetX = 0.0,
+    this.bgOffsetY = 0.0,
+    this.marginCm = 2.54, // ← ADD THIS
+    this.showHeaderFooter = true,
+    this.paperSize = PaperSize.a4,
+
+  });
+}
+
+// ─────────────────────────────────────────────────────────────
+// FORMATTING
+// ─────────────────────────────────────────────────────────────
+
+class ChangeAlignment extends EditorEvent {
+  final TextAlign alignment;
+  const ChangeAlignment(this.alignment);
+}
+
+class ChangeFontSize extends EditorEvent {
+  final double fontSize;
+  const ChangeFontSize(this.fontSize);
+}
+
+class ChangeFontFamily extends EditorEvent {
+  final String fontFamily;
+  const ChangeFontFamily(this.fontFamily);
+}
+
+class ToggleBold extends EditorEvent {
+  const ToggleBold();
+}
+
+class ToggleItalic extends EditorEvent {
+  const ToggleItalic();
+}
+
+class ToggleUnderline extends EditorEvent {
+  const ToggleUnderline();
+}
+
+/// Change the page margin (in centimetres).
+/// This is the single source of truth — PrintView, DOCX, and PDF
+/// all derive their margin values from this.
+class ChangeMargin extends EditorEvent {
+  final double marginCm;
+  const ChangeMargin(this.marginCm);
 }

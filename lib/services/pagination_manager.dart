@@ -48,16 +48,108 @@ class StyledText {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Paper layout constants — mirrors Word's default margins
+// ---------------------------------------------------------------------------
+class PaperLayout {
+  final double pageWidth;
+  final double pageHeight;
+  final double marginTop;
+  final double marginBottom;
+  final double marginLeft;
+  final double marginRight;
+  final double headerHeight;
+  final double footerHeight;
+  final double headerSpacing; // gap between header and body
+  final double footerSpacing; // gap between body and footer
+
+  const PaperLayout({
+    required this.pageWidth,
+    required this.pageHeight,
+    required this.marginTop,
+    required this.marginBottom,
+    required this.marginLeft,
+    required this.marginRight,
+    required this.headerHeight,
+    required this.footerHeight,
+    required this.headerSpacing,
+    required this.footerSpacing,
+  });
+
+  double get bodyWidth => pageWidth - marginLeft - marginRight;
+
+  double get bodyHeight =>
+      pageHeight -
+      marginTop -
+      marginBottom -
+      headerHeight -
+      footerHeight -
+      headerSpacing -
+      footerSpacing;
+
+  double get bodyTopOffset =>
+      marginTop + headerHeight + headerSpacing;
+
+  // A4: 210mm x 297mm at 96dpi ≈ 794 x 1123px
+  static const PaperLayout a4 = PaperLayout(
+    pageWidth: 794,
+    pageHeight: 1123,
+    marginTop: 72,      // ~19mm
+    marginBottom: 72,
+    marginLeft: 72,
+    marginRight: 72,
+    headerHeight: 36,
+    footerHeight: 36,
+    headerSpacing: 12,
+    footerSpacing: 12,
+  );
+
+  // Short (Letter): 8.5in x 11in at 96dpi = 816 x 1056px
+  static const PaperLayout short = PaperLayout(
+    pageWidth: 816,
+    pageHeight: 1056,
+    marginTop: 72,
+    marginBottom: 72,
+    marginLeft: 72,
+    marginRight: 72,
+    headerHeight: 36,
+    footerHeight: 36,
+    headerSpacing: 12,
+    footerSpacing: 12,
+  );
+
+  // Long (Legal): 8.5in x 14in at 96dpi = 816 x 1344px
+  static const PaperLayout long = PaperLayout(
+    pageWidth: 816,
+    pageHeight: 1344,
+    marginTop: 72,
+    marginBottom: 72,
+    marginLeft: 72,
+    marginRight: 72,
+    headerHeight: 36,
+    footerHeight: 36,
+    headerSpacing: 12,
+    footerSpacing: 12,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PaginationManager
+// ---------------------------------------------------------------------------
 class PaginationManager extends ChangeNotifier {
   String _documentText = '';
-
-  /// Linked container storage
   final List<List<StyledText>> _pages = [];
-
-  /// Global cursor position (SINGLE SOURCE OF TRUTH)
   int _globalCursorPosition = 0;
 
-  static const int _defaultCharsPerPage = 2500;
+  // Current layout — defaults to A4, updated when paper size changes
+  PaperLayout _layout = PaperLayout.a4;
+
+  // Current text style metrics — updated when font changes
+  double _fontSize = 12;
+  String _fontFamily = 'Arial';
+  bool _isBold = false;
+  bool _isItalic = false;
+  double _lineHeight = 1.8;
 
   PaginationManager();
 
@@ -68,6 +160,33 @@ class PaginationManager extends ChangeNotifier {
   String get fullText => _documentText;
   List<List<StyledText>> get pages => List.unmodifiable(_pages);
   int get globalCursorPosition => _globalCursorPosition;
+  PaperLayout get layout => _layout;
+
+  // ==============================
+  // Configuration
+  // ==============================
+
+  void setLayout(PaperLayout layout) {
+    _layout = layout;
+    _paginateByHeight();
+    notifyListeners();
+  }
+
+  void setTextStyle({
+    double? fontSize,
+    String? fontFamily,
+    bool? isBold,
+    bool? isItalic,
+    double? lineHeight,
+  }) {
+    _fontSize = fontSize ?? _fontSize;
+    _fontFamily = fontFamily ?? _fontFamily;
+    _isBold = isBold ?? _isBold;
+    _isItalic = isItalic ?? _isItalic;
+    _lineHeight = lineHeight ?? _lineHeight;
+    _paginateByHeight();
+    notifyListeners();
+  }
 
   // ==============================
   // Initialization
@@ -76,60 +195,51 @@ class PaginationManager extends ChangeNotifier {
   void initialize() {
     _documentText = '';
     _globalCursorPosition = 0;
-
     _pages
       ..clear()
       ..add([StyledText('')]);
-
     notifyListeners();
   }
 
   void loadInitialText(String text) {
     _documentText = text;
     _globalCursorPosition = 0;
-    _paginateDefault();
+    _paginateByHeight();
     notifyListeners();
   }
 
   // ==============================
-  // Mobile View Update
+  // Updates
   // ==============================
 
   void updateContent(String newText) {
     _documentText = newText;
     _globalCursorPosition =
         _globalCursorPosition.clamp(0, _documentText.length);
-
-    _paginateDefault();
+    _paginateByHeight();
     notifyListeners();
   }
 
   void setGlobalCursorPosition(int position) {
-    _globalCursorPosition = position.clamp(0, _documentText.length);
+    _globalCursorPosition =
+        position.clamp(0, _documentText.length);
     notifyListeners();
   }
-
-  // ==============================
-  // Print View Update (Linked Flow)
-  // ==============================
 
   void updateFromPages(
     List<List<StyledText>> newPages, {
     required int editingPageIndex,
     required int localCursorOffset,
   }) {
-    // Replace pages
     _pages
       ..clear()
       ..addAll(newPages);
 
-    // Rebuild full document from pages
     _documentText = newPages
         .expand((page) => page)
         .map((e) => e.text)
         .join();
 
-    // Convert local cursor → global cursor
     _globalCursorPosition =
         getGlobalFromLocal(editingPageIndex, localCursorOffset);
 
@@ -137,27 +247,22 @@ class PaginationManager extends ChangeNotifier {
   }
 
   // ==============================
-  // Global ↔ Local Cursor Mapping
+  // Cursor Mapping
   // ==============================
 
   CursorPosition getLocalCursorFromGlobal() {
     int current = 0;
-
     for (int i = 0; i < _pages.length; i++) {
       final pageText = _pages[i].map((e) => e.text).join();
       final length = pageText.length;
-
       if (_globalCursorPosition <= current + length) {
         return CursorPosition(
           pageIndex: i,
           localPosition: _globalCursorPosition - current,
         );
       }
-
       current += length;
     }
-
-    // Fallback to last page
     return CursorPosition(
       pageIndex: _pages.isEmpty ? 0 : _pages.length - 1,
       localPosition: _pages.isEmpty
@@ -168,21 +273,18 @@ class PaginationManager extends ChangeNotifier {
 
   int getGlobalFromLocal(int pageIndex, int localOffset) {
     if (_pages.isEmpty) return 0;
-
     int global = 0;
-
     for (int i = 0; i < pageIndex && i < _pages.length; i++) {
       global += _pages[i].map((e) => e.text).join().length;
     }
-
     return (global + localOffset).clamp(0, _documentText.length);
   }
 
   // ==============================
-  // Basic Pagination (Mobile Mode)
+  // Height-aware Pagination
   // ==============================
 
-  void _paginateDefault() {
+  void _paginateByHeight() {
     _pages.clear();
 
     if (_documentText.isEmpty) {
@@ -190,18 +292,79 @@ class PaginationManager extends ChangeNotifier {
       return;
     }
 
-    for (int i = 0; i < _documentText.length; i += _defaultCharsPerPage) {
-      final end = (i + _defaultCharsPerPage > _documentText.length)
-          ? _documentText.length
-          : i + _defaultCharsPerPage;
+    final style = TextStyle(
+      fontSize: _fontSize,
+      fontFamily: _fontFamily,
+      fontWeight: _isBold ? FontWeight.bold : FontWeight.normal,
+      fontStyle: _isItalic ? FontStyle.italic : FontStyle.normal,
+      height: _lineHeight,
+    );
 
-      _pages.add([
-        StyledText(_documentText.substring(i, end)),
-      ]);
+    final maxBodyWidth = _layout.bodyWidth;
+    final maxBodyHeight = _layout.bodyHeight;
+
+    // Split text into lines first
+    final lines = _documentText.split('\n');
+    final List<String> pageTexts = [];
+    String currentPageText = '';
+    double currentPageHeight = 0;
+
+    for (int i = 0; i < lines.length; i++) {
+      final line = lines[i];
+      final lineWithBreak = i < lines.length - 1 ? '$line\n' : line;
+
+      final lineHeight = _measureTextHeight(
+        lineWithBreak,
+        style,
+        maxBodyWidth,
+      );
+
+      if (currentPageHeight + lineHeight > maxBodyHeight &&
+          currentPageText.isNotEmpty) {
+        // Current page is full — save it and start a new one
+        pageTexts.add(currentPageText);
+        currentPageText = lineWithBreak;
+        currentPageHeight = lineHeight;
+      } else {
+        currentPageText += lineWithBreak;
+        currentPageHeight += lineHeight;
+      }
     }
 
-    if (_pages.isEmpty) {
+    // Add the last page
+    if (currentPageText.isNotEmpty) {
+      pageTexts.add(currentPageText);
+    }
+
+    if (pageTexts.isEmpty) {
       _pages.add([StyledText('')]);
+      return;
     }
+
+    for (final pageText in pageTexts) {
+      _pages.add([StyledText(pageText)]);
+    }
+  }
+
+  double _measureTextHeight(
+      String text, TextStyle style, double maxWidth) {
+    if (text.isEmpty) {
+      // Empty line still has height
+      final tp = TextPainter(
+        text: TextSpan(text: ' ', style: style),
+        textDirection: TextDirection.ltr,
+        maxLines: null,
+      );
+      tp.layout(maxWidth: maxWidth);
+      return tp.height;
+    }
+
+    final tp = TextPainter(
+      text: TextSpan(text: text, style: style),
+      textDirection: TextDirection.ltr,
+      maxLines: null,
+    );
+    tp.layout(maxWidth: maxWidth);
+    return tp.height;
   }
 }

@@ -1,0 +1,242 @@
+// editor_bloc.dart
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:flutter_quill/flutter_quill.dart' as quill;
+import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
+
+import 'editor_event.dart';
+import 'editor_state.dart';
+import 'file_name_service.dart';
+
+import '../../utils/pdf_generator.dart';
+import '../../utils/docx_generator.dart';
+
+class EditorBloc extends Bloc<EditorEvent, EditorState> {
+  Timer? _autoSaveTimer;
+  late quill.QuillController controller;
+
+  EditorBloc() : super(EditorState(currentFileName: 'Untitled Document')) {
+    controller = quill.QuillController.basic();
+
+    on<LoadInitialText>(_onLoadInitialText);
+    on<LoadJsonProject>(_onLoadJsonProject);
+    on<UpdateDocument>(_onUpdateDocument);
+    on<ChangePageSize>((e, emit) => emit(state.copyWith(pageSize: e.size)));
+    on<TogglePrintView>((e, emit) => emit(state.copyWith(isPrintView: !state.isPrintView, isHTMLView: false)));
+    on<ToggleHTMLView>((e, emit) => emit(state.copyWith(isHTMLView: !state.isHTMLView)));
+    on<ToggleToolbar>((e, emit) => emit(state.copyWith(showToolbar: !state.showToolbar)));
+    on<ChangeFileName>((e, emit) => emit(state.copyWith(currentFileName: e.newName)));
+    on<MarkSaved>((e, emit) => emit(state.copyWith(hasUnsavedChanges: false)));
+    on<SelectSaveFormat>((e, emit) => emit(state.copyWith(selectedSaveFormat: e.format)));
+    on<RequestSave>(_onRequestSave);
+    on<ResolveConflict>(_onResolveConflict);
+    on<SaveCompleted>((e, emit) => emit(state.copyWith(saveStatus: SaveStatus.success, hasUnsavedChanges: false)));
+    on<SaveFailed>((e, emit) => emit(state.copyWith(saveStatus: SaveStatus.error, saveError: e.error)));
+    on<SetHeaderFooter>(_onSetHeaderFooter);
+
+    on<ChangeAlignment>((e, emit) => emit(state.copyWith(alignment: e.alignment)));
+    on<ChangeFontSize>((e, emit) => emit(state.copyWith(fontSize: e.fontSize)));
+    on<ChangeFontFamily>((e, emit) => emit(state.copyWith(fontFamily: e.fontFamily)));
+    on<ToggleBold>((e, emit) => emit(state.copyWith(isBold: !state.isBold)));
+    on<ToggleItalic>((e, emit) => emit(state.copyWith(isItalic: !state.isItalic)));
+    on<ToggleUnderline>((e, emit) => emit(state.copyWith(isUnderline: !state.isUnderline)));
+    on<ChangeMargin>((e, emit) => emit(state.copyWith(marginCm: e.marginCm)));
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // LOAD
+  // ─────────────────────────────────────────────────────────────
+
+  void _onLoadInitialText(LoadInitialText event, Emitter<EditorState> emit) {
+    final doc = quill.Document()
+      ..insert(0, event.text.isEmpty ? '\n' : event.text);
+    controller = quill.QuillController(
+      document: doc,
+      selection: const TextSelection.collapsed(offset: 0),
+    );
+    emit(state.copyWith(
+      currentFileName: event.fileName ?? state.currentFileName,
+      hasUnsavedChanges: false,
+      isJsonProject: false,
+      projectFilePath: null,
+    ));
+  }
+
+  void _onLoadJsonProject(LoadJsonProject event, Emitter<EditorState> emit) {
+    try {
+      final jsonMap = jsonDecode(event.jsonString) as Map<String, dynamic>;
+      final (restoredState, restoredController) =
+          EditorState.fromJson(jsonMap, event.sourceFilePath);
+      controller = restoredController;
+      emit(restoredState);
+    } catch (e) {
+      emit(state.copyWith(
+        saveStatus: SaveStatus.error,
+        saveError: 'Failed to open project: $e',
+      ));
+    }
+  }
+
+  void _onUpdateDocument(UpdateDocument event, Emitter<EditorState> emit) {
+    emit(state.copyWith(hasUnsavedChanges: true));
+    _autoSaveTimer?.cancel();
+    _autoSaveTimer = Timer(
+      const Duration(seconds: 2),
+      () => add(const MarkSaved()),
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // SAVE
+  // ─────────────────────────────────────────────────────────────
+
+  Future<void> _onRequestSave(
+    RequestSave event,
+    Emitter<EditorState> emit,
+  ) async {
+    emit(state.copyWith(saveStatus: SaveStatus.saving));
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final ext = state.selectedSaveFormat.name;
+      final folder = Directory('${dir.path}/DocEase/${ext.toUpperCase()}');
+      if (!await folder.exists()) await folder.create(recursive: true);
+
+      final fileName = state.currentFileName.isEmpty
+          ? 'Untitled Document'
+          : state.currentFileName;
+
+      if (state.selectedSaveFormat == SaveFormat.json &&
+          state.projectFilePath != null) {
+        await _performFileSave(state.projectFilePath!, emit);
+        add(const SaveCompleted());
+        return;
+      }
+
+      final suggested = await FileNameService.checkConflict(fileName, ext);
+      if (suggested != null) {
+        emit(state.copyWith(
+          saveStatus: SaveStatus.conflict,
+          conflictFileName: fileName,
+          suggestedFileName: suggested,
+        ));
+        return;
+      }
+
+      final fullPath = '${folder.path}/$fileName.$ext';
+      await _performFileSave(fullPath, emit);
+      add(const SaveCompleted());
+    } catch (e) {
+      add(SaveFailed(e.toString()));
+    }
+  }
+
+  Future<void> _onResolveConflict(
+    ResolveConflict event,
+    Emitter<EditorState> emit,
+  ) async {
+    emit(state.copyWith(saveStatus: SaveStatus.saving));
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final ext = state.selectedSaveFormat.name;
+      final folder = Directory('${dir.path}/DocEase/${ext.toUpperCase()}');
+      final finalName =
+          event.replace ? state.conflictFileName! : state.suggestedFileName!;
+      final fullPath = '${folder.path}/$finalName.$ext';
+      await _performFileSave(fullPath, emit);
+      emit(state.copyWith(currentFileName: finalName));
+      add(const SaveCompleted());
+    } catch (e) {
+      add(SaveFailed(e.toString()));
+    }
+  }
+
+  Future<void> _performFileSave(
+    String path,
+    Emitter<EditorState> emit,
+  ) async {
+    switch (state.selectedSaveFormat) {
+      case SaveFormat.json:
+        final jsonMap = state.toJson(controller);
+        final jsonString = const JsonEncoder.withIndent('  ').convert(jsonMap);
+        await File(path).writeAsString(jsonString, flush: true);
+        emit(state.copyWith(projectFilePath: path, isJsonProject: true));
+        break;
+
+      case SaveFormat.txt:
+        await File(path).writeAsString(
+          controller.document.toPlainText(),
+          flush: true,
+        );
+        break;
+
+      case SaveFormat.pdf:
+        await generatePDF(
+          document: controller.document,
+          pageSize: state.pageSize.name,
+          fontSize: state.fontSize,
+          fontFamily: state.fontFamily,
+          savePath: path,
+          headerText: state.headerText,
+          footerText: state.footerText,
+          bodyTopMargin: state.bodyTopMargin,
+          backgroundImagePath: state.backgroundImagePath,
+          backgroundOpacity: state.backgroundOpacity,
+          isBold: state.isBold,
+          isItalic: state.isItalic,
+          isUnderline: state.isUnderline,
+          marginCm: state.marginCm,
+        );
+        break;
+
+      case SaveFormat.docx:
+        await generateDocx(
+          document: controller.document,
+          pageSize: state.pageSize.name,
+          // fontSize in state is points (pt). Word uses half-points → ×2.
+          fontSize: (state.fontSize * 2).toInt(),
+          fontFamily: state.fontFamily,
+          savePath: path,
+          isBold: state.isBold,
+          isItalic: state.isItalic,
+          isUnderline: state.isUnderline,
+          // NOTE: globalAlignment is intentionally NOT passed.
+          // Alignment is per-paragraph in the Quill Delta — the generator
+          // reads it directly from each Line's newline leaf attributes.
+          headerText: state.headerText,
+          footerText: state.footerText,
+          backgroundImagePath: state.backgroundImagePath,
+          marginCm: state.marginCm,
+        );
+        break;
+    }
+  }
+
+  void _onSetHeaderFooter(SetHeaderFooter event, Emitter<EditorState> emit) {
+    emit(state.copyWith(
+      headerText: event.header,
+      footerText: event.footer,
+      isHeaderFooterLocked: event.locked,
+      headerImagePath: event.headerImagePath,
+      footerImagePath: event.footerImagePath,
+      backgroundImagePath: event.backgroundImagePath,
+      backgroundOpacity: event.backgroundOpacity,
+      bodyTopMargin: event.bodyTopMargin,
+      bgScale: event.bgScale,
+      bgOffsetX: event.bgOffsetX,
+      bgOffsetY: event.bgOffsetY,
+      marginCm: event.marginCm, // ← ADD THIS
+      showHeaderFooter: event.showHeaderFooter,
+      pageSize: event.paperSize,
+    ));
+  }
+
+  @override
+  Future<void> close() {
+    _autoSaveTimer?.cancel();
+    controller.dispose();
+    return super.close();
+  }
+}

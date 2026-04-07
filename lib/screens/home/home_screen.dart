@@ -3,11 +3,12 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:pro_image_editor/pro_image_editor.dart';
-import '../editor/editor.dart';
-import 'package:flutter_bloc/flutter_bloc.dart';
-import '/logic/editor_bloc/editor_bloc.dart';
+
 import '/logic/editor_bloc/ocr_service.dart';
 import '/logic/editor_bloc/file_name_service.dart';
+import '/logic/editor_bloc/text_correction_service.dart';
+import '/screens/home/template_picker_screen.dart';
+
 
 class HomeScreen extends StatefulWidget {
   final bool isDarkMode;
@@ -78,6 +79,13 @@ class _HomeScreenState extends State<HomeScreen> {
         double displayProgress = 0;
         bool animateUp = true;
 
+        // --- DIALOG COLORS BASED ON MODE ---
+        final bool isDark = widget.isDarkMode;
+        final Color dialogBg = isDark ? const Color(0xFF0D1128) : Colors.white;
+        final Color textColor = isDark ? Colors.white : const Color(0xFF1A1C2E);
+        final Color scannerIconBg = isDark ? Colors.white24 : const Color(0xFF061F33).withOpacity(0.1);
+        final Color progressBg = isDark ? Colors.white10 : Colors.black12;
+
         return StatefulBuilder(
           builder: (context, setDialogState) {
             Future.delayed(const Duration(milliseconds: 30), () {
@@ -90,7 +98,7 @@ class _HomeScreenState extends State<HomeScreen> {
             });
 
             return AlertDialog(
-              backgroundColor: const Color(0xFF0D1128),
+              backgroundColor: dialogBg, // Updated
               shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(20)),
               content: Column(
@@ -100,8 +108,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   Stack(
                     alignment: Alignment.center,
                     children: [
-                      const Icon(Icons.document_scanner,
-                          size: 50, color: Colors.white24),
+                      Icon(Icons.document_scanner,
+                          size: 50, color: scannerIconBg), // Updated
                       TweenAnimationBuilder<double>(
                         tween: Tween(
                           begin: animateUp ? -25.0 : 25.0,
@@ -117,10 +125,10 @@ class _HomeScreenState extends State<HomeScreen> {
                               width: 60,
                               height: 2,
                               decoration: BoxDecoration(
-                                color: Colors.blue,
+                                color: Colors.blueAccent,
                                 boxShadow: [
                                   BoxShadow(
-                                    color: Colors.blue.withOpacity(0.5),
+                                    color: Colors.blueAccent.withOpacity(0.5),
                                     blurRadius: 10,
                                     spreadRadius: 2,
                                   ),
@@ -133,9 +141,9 @@ class _HomeScreenState extends State<HomeScreen> {
                     ],
                   ),
                   const SizedBox(height: 30),
-                  const Text(
+                  Text(
                     "Processing Scans...",
-                    style: TextStyle(color: Colors.white, fontSize: 16),
+                    style: TextStyle(color: textColor, fontSize: 16, fontWeight: FontWeight.w600), // Updated
                   ),
                   const SizedBox(height: 15),
                   ClipRRect(
@@ -143,8 +151,8 @@ class _HomeScreenState extends State<HomeScreen> {
                     child: LinearProgressIndicator(
                       value: displayProgress.clamp(0.0, 1.0),
                       minHeight: 10,
-                      backgroundColor: Colors.white10,
-                      color: Colors.blue,
+                      backgroundColor: progressBg, // Updated
+                      color: Colors.blueAccent,
                     ),
                   ),
                   const SizedBox(height: 10),
@@ -176,12 +184,35 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
     } catch (e) {
-      debugPrint("OCR Error: $e");
+      debugPrint("OCR Error: $e"); 
+      
       if (mounted) {
+        String friendlyMessage = "An unexpected error occurred during scanning.";
+
+        if (e.toString().contains("PathNotFoundException") || e.toString().contains("No such file")) {
+          friendlyMessage = "The image file could not be found. Please try retaking the photo.";
+        } else if (e.toString().contains("PermissionDenied")) {
+          friendlyMessage = "Storage permission is required to scan documents.";
+        } else if (e.toString().contains("Memory")) {
+          friendlyMessage = "The image is too large. Please try a lower resolution.";
+        }
+
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text("Scan error: $e"),
-            backgroundColor: Colors.redAccent,
+            behavior: SnackBarBehavior.floating, 
+            backgroundColor: Colors.red.shade800,
+            content: Row(
+              children: [
+                const Icon(Icons.error_outline, color: Colors.white),
+                const SizedBox(width: 12),
+                Expanded(child: Text(friendlyMessage)), 
+              ],
+            ),
+            action: SnackBarAction(
+              label: "RETRY",
+              textColor: Colors.white,
+              onPressed: () {},
+            ),
           ),
         );
       }
@@ -192,28 +223,27 @@ class _HomeScreenState extends State<HomeScreen> {
       if (mounted) Navigator.of(context, rootNavigator: true).pop();
     }
 
-// 3. Navigate to editor or show warning
-if (result == null || !result.foundText) {
-  _showWarning("No text detected in any image.");
-} else {
-  await Future.delayed(const Duration(milliseconds: 100));
-  if (mounted) {
-    final fileName = await FileNameService.nextUntitledName('txt'); // <-- resolve here
+    // 3. Navigate to editor or show warning
+    if (result == null || !result.foundText) {
+      _showWarning("No text detected in any image.");
+    } else {
+      await Future.delayed(const Duration(milliseconds: 100));
+      if (mounted) {
+        final fileName = await FileNameService.nextUntitledName('txt');
+        final correctedText = TextCorrectionService.correct(result.formattedText);
 
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => BlocProvider(
-          create: (_) => EditorBloc(),
-          child: TextEditorScreen(
-            initialText: result!.formattedText,
-            fileName: fileName, // <-- use it here
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => TemplatePickerScreen(
+              correctedText: correctedText,
+              fileName: fileName, 
+              isDarkMode: widget.isDarkMode,
+            ),
           ),
-        ),
-      ),
-    ).then((_) => setState(() => _images.clear()));
-  }
-}
+        ).then((_) => setState(() => _images.clear()));
+      }
+    }
   }
 
   // -----------------------
@@ -221,26 +251,30 @@ if (result == null || !result.foundText) {
   // -----------------------
   void _showWarning(String message) {
     if (!mounted) return;
+    
+    // Warning Dialog Colors
+    final bool isDark = widget.isDarkMode;
+    final Color dialogBg = isDark ? const Color(0xFF0D1128) : Colors.white;
+    final Color textColor = isDark ? Colors.white : const Color(0xFF1A1C2E);
+    final Color subTextColor = isDark ? Colors.white70 : Colors.black87;
+
     showDialog(
       context: context,
       builder: (_) => AlertDialog(
-        backgroundColor: const Color(0xFF0D1128),
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Row(
+        backgroundColor: dialogBg, // Updated
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
           children: [
-            Icon(Icons.warning_amber_rounded, color: Colors.orange),
-            SizedBox(width: 8),
-            Text("Warning", style: TextStyle(color: Colors.white)),
+            const Icon(Icons.warning_amber_rounded, color: Colors.orange),
+            const SizedBox(width: 8),
+            Text("Warning", style: TextStyle(color: textColor, fontWeight: FontWeight.bold)), // Updated
           ],
         ),
-        content:
-            Text(message, style: const TextStyle(color: Colors.white70)),
+        content: Text(message, style: TextStyle(color: subTextColor)), // Updated
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text("OK",
-                style: TextStyle(color: Colors.blueAccent)),
+            child: const Text("OK", style: TextStyle(color: Colors.blueAccent, fontWeight: FontWeight.bold)),
           ),
         ],
       ),
@@ -330,10 +364,13 @@ if (result == null || !result.foundText) {
     final bool isDark = widget.isDarkMode;
 
     final Color cardBg = isDark ? const Color(0xFF121430) : Colors.white;
-    final Color textColor =
-        isDark ? Colors.white : const Color(0xFF1A1C2E);
+    final Color textColor = isDark ? Colors.white : const Color(0xFF1A1C2E);
     final Color subTextColor = isDark ? Colors.white70 : Colors.black54;
     final Color borderColor = isDark ? Colors.white10 : Colors.black12;
+
+    // --- BUTTON COLORS ---
+    // Dark mode = Bright Blue | Light Mode = Dark Navy
+    final Color primaryButtonBg = isDark ? Colors.blueAccent : const Color(0xFF061F33);
 
     return Scaffold(
       backgroundColor: Colors.transparent,
@@ -373,6 +410,8 @@ if (result == null || !result.foundText) {
                     style: TextStyle(color: subTextColor, fontSize: 14),
                   ),
                   const SizedBox(height: 25),
+                  
+                  // --- UPDATED CAPTURE DOCUMENT BUTTON ---
                   ElevatedButton.icon(
                     onPressed: () async {
                       final XFile? picked = await _picker.pickImage(
@@ -382,12 +421,12 @@ if (result == null || !result.foundText) {
                       }
                     },
                     icon: const Icon(Icons.camera_alt),
-                    label: const Text("Capture Document"),
+                    label: const Text("Capture Document", style: TextStyle(fontWeight: FontWeight.w600)),
                     style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 20, vertical: 12),
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
+                      backgroundColor: primaryButtonBg, // Changes based on mode
+                      foregroundColor: Colors.white, // Text & Icon are always white inside the dark button
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     ),
                   ),
                 ],
@@ -470,12 +509,14 @@ if (result == null || !result.foundText) {
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
+                  
+                  // --- UPDATED SCAN BUTTON ---
                   ElevatedButton.icon(
                     onPressed: _scanText,
                     icon: const Icon(Icons.document_scanner),
-                    label: const Text("Scan"),
+                    label: const Text("Scan", style: TextStyle(fontWeight: FontWeight.w600)),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.blueAccent,
+                      backgroundColor: primaryButtonBg, // Matches "Capture Document"
                       foregroundColor: Colors.white,
                     ),
                   ),
