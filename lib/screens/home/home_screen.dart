@@ -229,7 +229,7 @@ class _HomeScreenState extends State<HomeScreen> {
     } else {
       await Future.delayed(const Duration(milliseconds: 100));
       if (mounted) {
-        final fileName = await FileNameService.nextUntitledName('txt');
+        final fileName = await FileNameService.nextUntitledName('json');
         final correctedText = TextCorrectionService.correct(result.formattedText);
 
         Navigator.push(

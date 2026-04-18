@@ -3,14 +3,27 @@ import 'package:path_provider/path_provider.dart';
 
 class FileNameService {
   // Returns the next available "Untitled Document N" name
-  static Future<String> nextUntitledName(String format) async {
-    final existing = await _getExistingFileNames(format);
-    int counter = 1;
-    while (existing.contains('Untitled Document $counter')) {
-      counter++;
-    }
-    return 'Untitled Document $counter';
+static Future<String> nextUntitledName(String format) async {
+  final dir = await getApplicationDocumentsDirectory();
+  final folder = Directory('${dir.path}/DocEase/${format.toUpperCase()}');
+  if (!await folder.exists()) await folder.create(recursive: true);
+
+  final existing = await _getExistingFileNames(format);
+  int counter = 1;
+  while (existing.contains('Untitled Document $counter')) {
+    counter++;
   }
+
+  final name = 'Untitled Document $counter';
+
+  // Reserve the name immediately so the next call sees it
+  final placeholder = File('${folder.path}/$name.$format');
+  if (!await placeholder.exists()) {
+    await placeholder.writeAsString(''); // empty placeholder
+  }
+
+  return name;
+}
 
   // Checks for conflict and returns resolution
   // Returns null if no conflict

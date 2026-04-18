@@ -80,9 +80,14 @@ class SelectSaveFormat extends EditorEvent {
 // SAVE FLOW
 // ─────────────────────────────────────────────────────────────
 
+class AutoSave extends EditorEvent {
+  const AutoSave();
+}
+
 class RequestSave extends EditorEvent {
   const RequestSave();
 }
+
 
 class ResolveConflict extends EditorEvent {
   final bool replace;

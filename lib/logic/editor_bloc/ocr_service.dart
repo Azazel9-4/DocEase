@@ -4,7 +4,7 @@ import 'package:image/image.dart' as img;
 
 class OcrResult {
   final String formattedText;
-  final List<String> qualityWarnings; // per-image warnings
+  final List<String> qualityWarnings;
   final bool foundText;
 
   const OcrResult({
@@ -19,47 +19,77 @@ class OcrService {
   // PUBLIC
   // ---------------------------------------------------------------------------
 
-Future<OcrResult> scanImages(List<File> images) async {
-  final textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
-  String formattedText = "";
-  bool foundText = false;
-  final List<String> qualityWarnings = [];
+  Future<OcrResult> scanImages(List<File> images) async {
+    final textRecognizer =
+        TextRecognizer(script: TextRecognitionScript.latin);
+    String formattedText = "";
+    bool foundText = false;
+    final List<String> qualityWarnings = [];
 
-  try {
-    for (int i = 0; i < images.length; i++) {
-      final qualityIssue = await _analyzeImageQuality(images[i]);
-      if (qualityIssue != null) {
-        qualityWarnings.add("Image ${i + 1}: $qualityIssue");
-      }
-
-      final inputImage = InputImage.fromFile(images[i]);
-      final recognizedText = await textRecognizer.processImage(inputImage);
-
-      if (recognizedText.blocks.isEmpty) continue;
-      foundText = true;
-
-      for (final block in recognizedText.blocks) {
-        if (block.lines.isEmpty) continue;
-
-        for (final line in block.lines) {
-          formattedText += "${line.text.trim()}\n";
+    try {
+      for (int i = 0; i < images.length; i++) {
+        final qualityIssue = await _analyzeImageQuality(images[i]);
+        if (qualityIssue != null) {
+          qualityWarnings.add("Image ${i + 1}: $qualityIssue");
         }
 
-        formattedText += "\n"; // blank line between blocks
+        final inputImage = InputImage.fromFile(images[i]);
+        final recognizedText =
+            await textRecognizer.processImage(inputImage);
+
+        if (recognizedText.blocks.isEmpty) continue;
+        foundText = true;
+
+        // ── FIX: Sort blocks top-to-bottom by their bounding box Y position.
+        //
+        // ML Kit does NOT guarantee that blocks are returned in reading order.
+        // Large/bold headings are often detected as isolated blocks and may
+        // appear anywhere in the list. Sorting by the top edge of each block's
+        // bounding rect restores the natural visual order before we join them.
+        // ── FIX: Sort blocks top-to-bottom by their bounding box Y position.
+        final sortedBlocks = List.of(recognizedText.blocks)
+          ..sort((a, b) {
+            final aTop = a.boundingBox.top;
+            final bTop = b.boundingBox.top;
+
+            // Instead of a microscopic 20 pixels, we use half the height 
+            // of the text block. This dynamically adapts to high-resolution 
+            // images and large title fonts!
+            final dynamicTolerance = a.boundingBox.height / 2;
+
+            if ((aTop - bTop).abs() > dynamicTolerance) {
+              // If the height difference is significant, sort Top to Bottom
+              return aTop.compareTo(bTop);
+            }
+            
+            // If they truly share the same row, sort Left to Right
+            return a.boundingBox.left.compareTo(b.boundingBox.left);
+          });
+
+        for (final block in sortedBlocks) {
+          if (block.lines.isEmpty) continue;
+
+          for (final line in block.lines) {
+            formattedText += "${line.text.trim()}\n";
+          }
+
+          formattedText += "\n"; // blank line between blocks
+        }
+
+        if (i < images.length - 1) {
+          formattedText += "\n\n"; // separator between pages
+        }
       }
-
-      if (i < images.length - 1) formattedText += "\n\n"; // separator between pages
+    } finally {
+      await textRecognizer.close();
     }
-  } finally {
-    await textRecognizer.close();
-  }
 
-  return OcrResult(
-    formattedText: formattedText.trim(),
-    qualityWarnings: qualityWarnings,
-    foundText: foundText,
-  );
-}
+    return OcrResult(
+      formattedText: formattedText.trim(),
+      qualityWarnings: qualityWarnings,
+      foundText: foundText,
+    );
+  }
 
   // ---------------------------------------------------------------------------
   // PRIVATE — image quality helpers

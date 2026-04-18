@@ -18,7 +18,7 @@ class DocEaseApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'DocEase v5',
+      title: 'DocEase',
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark().copyWith(
         // Keeping your original branding colors

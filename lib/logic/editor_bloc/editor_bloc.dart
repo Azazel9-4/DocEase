@@ -18,7 +18,7 @@ import '../../utils/docx_generator.dart';
 import '../../services/export_storage_service.dart';
 
 class EditorBloc extends Bloc<EditorEvent, EditorState> {
-  Timer? _autoSaveTimer;
+  //Timer? _autoSaveTimer;
   late quill.QuillController controller;
   final ExportStorageService _exportService = ExportStorageService();
 
@@ -85,11 +85,6 @@ class EditorBloc extends Bloc<EditorEvent, EditorState> {
 
   void _onUpdateDocument(UpdateDocument event, Emitter<EditorState> emit) {
     emit(state.copyWith(hasUnsavedChanges: true));
-    _autoSaveTimer?.cancel();
-    _autoSaveTimer = Timer(
-      const Duration(seconds: 2),
-      () => add(const MarkSaved()),
-    );
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -303,7 +298,6 @@ Future<void> _backupToPublicStorage(String originalPath, String fileName, String
 
   @override
   Future<void> close() {
-    _autoSaveTimer?.cancel();
     controller.dispose();
     return super.close();
   }

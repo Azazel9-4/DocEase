@@ -83,6 +83,9 @@ class _PrintViewState extends State<PrintView> with TickerProviderStateMixin {
   static const double _pageGap = 24.0;
   static const double _ruleGap = 6.0;
 
+  static const double _documentLineHeight = 1.23;
+
+
   // MUST stay in sync with the vertical: value in the InteractiveViewer's Padding
   static const double _canvasTopPad = 16.0;
 
@@ -111,7 +114,7 @@ class _PrintViewState extends State<PrintView> with TickerProviderStateMixin {
         text:
             _headerController.text.isEmpty ? 'Header' : _headerController.text,
         style: const TextStyle(
-            fontSize: 9, fontWeight: FontWeight.w600, height: 1.2),
+            fontSize: 12, fontWeight: FontWeight.w600, height: 1.0),
       ),
       textDirection: TextDirection.ltr,
     )..layout(maxWidth: _bodyWidth - 8);
@@ -126,7 +129,7 @@ class _PrintViewState extends State<PrintView> with TickerProviderStateMixin {
       text: TextSpan(
         text:
             _footerController.text.isEmpty ? 'Footer' : _footerController.text,
-        style: const TextStyle(fontSize: 9, height: 1.2),
+        style: const TextStyle(fontSize: 12, height: 1.0),
       ),
       textDirection: TextDirection.ltr,
     )..layout(maxWidth: _bodyWidth);
@@ -147,6 +150,25 @@ class _PrintViewState extends State<PrintView> with TickerProviderStateMixin {
   }
 
   int get _numPages => _pageStartOffsets.length;
+
+    // Gets the exact pixel height Flutter is using to draw the lines
+  double _getExactLineHeight() {
+    final style = TextStyle(
+      fontSize: _displayFontSize,
+      fontFamily: widget.fontFamily,
+      height: _documentLineHeight, 
+    );
+    final tp = TextPainter(
+      text: TextSpan(text: 'Tg', style: style), // Use tall and low letters
+      textDirection: TextDirection.ltr,
+    )..layout();
+    
+    final metrics = tp.computeLineMetrics();
+    if (metrics.isNotEmpty) {
+      return metrics.first.height;
+    }
+    return _displayFontSize * _documentLineHeight;
+  }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
   @override
@@ -284,7 +306,7 @@ class _PrintViewState extends State<PrintView> with TickerProviderStateMixin {
     }
 
     // This is the exact height of a single line of text
-    final double lh = _displayFontSize * 1.15;
+    final double lh = _getExactLineHeight();
 
     if (totalH <= 0) {
       final style = TextStyle(
@@ -404,7 +426,10 @@ class _PrintViewState extends State<PrintView> with TickerProviderStateMixin {
       textDirection: TextDirection.ltr,
       maxLines: null,
     )..layout(maxWidth: _bodyWidth);
-    return tp.height;
+    final double lh = _getExactLineHeight();
+    
+    // Tracks the vertical center of the line so it doesn't bounce/tunnel
+    return math.max(0.0, tp.height - (lh / 2));
   }
 
   int _pageIndexForDocY(double docY) {

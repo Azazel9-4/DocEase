@@ -1,5 +1,5 @@
-// lib/screens/editor/text_editor_screen.dart
-
+import 'dart:io';
+import 'package:path_provider/path_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_html/flutter_html.dart';
@@ -15,14 +15,10 @@ import '/services/mobile_view.dart';
 
 import '/screens/editor/save_bottom_sheet.dart';
 
-import '/screens/home/template_picker_screen.dart';
-
-
 class TextEditorScreen extends StatefulWidget {
   final String? initialText;
   final String? fileName;
   final bool isDarkMode;
-
 
   const TextEditorScreen({super.key, this.initialText, this.fileName, required this.isDarkMode});
 
@@ -34,6 +30,9 @@ class _TextEditorScreenState extends State<TextEditorScreen> {
   late quill.QuillController _quillController;
   late TextEditingController _titleController;
   final PaginationManager _paginationManager = PaginationManager();
+  
+  // Manage PopScope cleanly
+  bool _canPop = false;
 
   @override
   void initState() {
@@ -45,24 +44,51 @@ class _TextEditorScreenState extends State<TextEditorScreen> {
 
     final bloc = context.read<EditorBloc>();
 
-if (!bloc.state.isJsonProject) {
+    if (!bloc.state.isJsonProject && widget.initialText != null) {
       final initialText = widget.initialText ?? '';
       bloc.add(ChangeFileName(widget.fileName ?? 'Untitled Document'));
       
-      // FIX: Assign directly to the bloc's controller instead of creating a separate UI controller
+      // Assign directly to the bloc's controller
       bloc.controller = quill.QuillController(
         document: quill.Document()
           ..insert(0, initialText.isEmpty ? '\n' : initialText),
         selection: const TextSelection.collapsed(offset: 0),
       );
+      bloc.controller.document.history.clear();
+
+      // Ensure the "Unsaved changes" dialog triggers when hitting the back button
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          bloc.add(UpdateDocument(bloc.controller.document));
+        }
+      });
+      
+      // Secondary safety net to delete the placeholder if arriving here directly
+      _deleteEmptyPlaceholder(); 
     }
     
     // Both UI and Bloc now reference the exact same controller in memory
     _quillController = bloc.controller;
 
-    _quillController.document.changes.listen((_) {
-      context.read<EditorBloc>().add(UpdateDocument(_quillController.document));
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _quillController.document.changes.listen((_) {
+          context.read<EditorBloc>().add(UpdateDocument(_quillController.document));
+        });
+      }
     });
+  }
+
+  Future<void> _deleteEmptyPlaceholder() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/DocEase/JSON/${widget.fileName}.json');
+      if (await file.exists()) {
+        await file.delete();
+      }
+    } catch (e) {
+      debugPrint("Failed to delete placeholder: $e");
+    }
   }
 
   @override
@@ -73,27 +99,15 @@ if (!bloc.state.isJsonProject) {
     super.dispose();
   }
 
-  void _goToTemplatePicker() {
-  Navigator.pushReplacement(
-    context,
-    MaterialPageRoute(
-      builder: (_) => TemplatePickerScreen(
-        correctedText: _quillController.document.toPlainText(),
-        fileName: _titleController.text,
-        isDarkMode: widget.isDarkMode,
-      ),
-    ),
-  );
-}
-
   // ─────────────────────────────────────────────────────────────
   // SAVE / POP
   // ─────────────────────────────────────────────────────────────
 
-  Future<bool> _onWillPop() async {
-    if (!context.read<EditorBloc>().state.hasUnsavedChanges) {
-      _goToTemplatePicker(); // ← go directly if no unsaved changes
-      return false;
+   Future<bool> _onWillPop() async {
+    final bloc = context.read<EditorBloc>();
+
+    if (!bloc.state.hasUnsavedChanges) {
+      return true; // Let the native stack safely pop back!
     }
 
     final result = await showDialog<String>(
@@ -139,10 +153,11 @@ if (!bloc.state.isJsonProject) {
     );
 
     if (result == null || result == 'cancel') return false;
+    
     if (result == 'no')  {
-      _goToTemplatePicker(); 
-      return false;
-      }
+      return true; // Let the native stack safely pop back!
+    }
+    
     if (mounted) _showSaveBottomSheet(popAfterSave: true);
     return false;
   }
@@ -176,11 +191,14 @@ if (!bloc.state.isJsonProject) {
     final Color hintColor = isDark ? Colors.white38 : Colors.black38;
 
     return PopScope(
-      canPop: false,
+      canPop: _canPop,
       onPopInvoked: (didPop) async {
         if (didPop) return;
         final shouldPop = await _onWillPop();
-        if (shouldPop && mounted) Navigator.pop(context);
+        if (shouldPop && mounted) {
+          setState(() => _canPop = true); 
+          Navigator.pop(context); 
+        }
       },
       child: BlocListener<EditorBloc, EditorState>(
         listenWhen: (prev, curr) =>
@@ -200,7 +218,10 @@ if (!bloc.state.isJsonProject) {
                   icon: Icon(Icons.arrow_back, color: iconColor),
                   onPressed: () async {
                     final shouldPop = await _onWillPop();
-                    if (shouldPop && mounted) Navigator.pop(context);
+                    if (shouldPop && mounted) {
+                      setState(() => _canPop = true); 
+                      Navigator.pop(context);
+                    }
                   },
                 ),
                 title: Container(
@@ -216,7 +237,7 @@ if (!bloc.state.isJsonProject) {
                     decoration: InputDecoration(
                       hintText: 'Untitled Document',
                       hintStyle: TextStyle(color: hintColor),
-                      contentPadding: EdgeInsets.symmetric(
+                      contentPadding: const EdgeInsets.symmetric(
                           horizontal: 12, vertical: 8),
                       border: InputBorder.none,
                     ),
@@ -266,9 +287,6 @@ if (!bloc.state.isJsonProject) {
                     ),
                   ),
 
-                  // ── Body: unchanged AnimatedSwitcher ──────────────
-                  // Tables render inline inside MobileView/PrintView via
-                  // TableEmbedBuilder — no structural changes needed here.
                   Expanded(
                     child: AnimatedSwitcher(
                       duration: const Duration(milliseconds: 200),
@@ -300,8 +318,8 @@ if (!bloc.state.isJsonProject) {
                                 : MobileView(
                                     key: const ValueKey('mobile'),
                                     controller: _quillController,
-                                    fontSize: state.fontSize,       // ← ADD THIS
-                                    fontFamily: state.fontFamily,   // ← ADD THIS
+                                    fontSize: state.fontSize,       
+                                    fontFamily: state.fontFamily,   
                                   ),
                                 ),
                               ),
@@ -358,7 +376,6 @@ if (!bloc.state.isJsonProject) {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // ── ROW 1: Undo/Redo, Formatting, Alignment, Table ──
               SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
                 padding:
@@ -461,7 +478,6 @@ if (!bloc.state.isJsonProject) {
                 ),
               ),
 
-              // ── ROW 2: Font Family, Font Size, Page Size ──────────
               SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
                 padding:
@@ -546,21 +562,21 @@ if (!bloc.state.isJsonProject) {
   // TOOLBAR HELPERS
   // ─────────────────────────────────────────────────────────────
 
-Widget _appBarAction({
-  required IconData icon,
-  required VoidCallback onPressed,
-}) {
-  final isDark = widget.isDarkMode;
-  final iconColor = isDark ? Colors.white : const Color(0xFF061F33);
+  Widget _appBarAction({
+    required IconData icon,
+    required VoidCallback onPressed,
+  }) {
+    final isDark = widget.isDarkMode;
+    final iconColor = isDark ? Colors.white : const Color(0xFF061F33);
 
-  return Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 4),
-    child: IconButton(
-      icon: Icon(icon, color: iconColor),
-      onPressed: onPressed,
-    ),
-  );
-}
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: IconButton(
+        icon: Icon(icon, color: iconColor),
+        onPressed: onPressed,
+      ),
+    );
+  }
 
   Widget _toolbarButton(
     IconData icon,

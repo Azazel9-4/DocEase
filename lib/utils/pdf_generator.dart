@@ -82,7 +82,7 @@ Future<void> generatePDF({
         // EXACT PARITY WITH PRINT_VIEW:
         // 1. If background image exists, use the custom bodyTopMargin
         if (bgImage != null) {
-           return pw.SizedBox(height: bodyTopMargin);
+           return pw.SizedBox(height: bodyTopMargin* 0.75);
         }
         // 2. If headers are hidden, just return the exact margin (no 160 bug!)
         if (!showHeaderFooter) {
