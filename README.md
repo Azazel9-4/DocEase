@@ -1,16 +1,25 @@
-# thesis_app_v5
+# DocEase 📄✨
 
-A new Flutter project.
+**DocEase** is a unified mobile solution designed for students and faculty to streamline document capture, text processing, and management. Built as part of a 4th-year university thesis, it leverages Flutter for high-performance cross-platform document handling.
 
-## Getting Started
+---
 
-This project is a starting point for a Flutter application.
+## 🚀 Key Features
+* **Smart Document Capture:** High-quality mobile scanning optimized for academic documents.
+* **OCR & Text Correction:** Integrated algorithms to fix broken words, spacing, and punctuation in scanned text.
+* **Offline First:** Capture and edit your documents without needing an active internet connection.
+* **Minimalist UI:** A sleek, modern interface designed for a focused user experience.
 
-A few resources to get you started if this is your first Flutter project:
+## 🛠️ Tech Stack
+* **Framework:** Flutter
+* **Language:** Dart
+* **Key Libraries:** OCR processing, PDF/Docx generation, and local storage.
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+## 📱 Installation
+To test the application, you can find the release APK in the latest build outputs:
+1. Download `app-release.apk`.
+2. Enable "Install from Unknown Sources" on your Android device.
+3. Install and launch **DocEase**.
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+---
+*Developed by Azazel — 2026 Thesis Project*
